@@ -1,0 +1,33 @@
+[project]
+name = "aibigproject"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "jndean8007-rgb", email = "jndean8007@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "einops>=0.8.2",
+    "jaxtyping>=0.3.11",
+    "pytest>=9.1.1",
+    "torch>=2.11.0",
+]
+
+[project.scripts]
+aibigproject = "aibigproject:main"
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["aibigproject", "torch_llm"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
