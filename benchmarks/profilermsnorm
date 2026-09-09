@@ -1,0 +1,21 @@
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)                                                  Name
+ --------  ---------------  ---------  --------  --------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
+     30.3         79673731        220  362153.3  343646.5    289054    674813      63832.1  void at::native::vectorized_elementwise_kernel<(int)4, void at::native::<unnamed>::pow_tensor_scalaâ?▌
+     29.7         78150825        220  355231.0  343183.0    326271    696797      51049.4  void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::nâ?▌
+     28.1         73994402        220  336338.2  322702.5    293791   1056539      67103.5  void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::nâ?▌
+     11.7         30674554        220  139429.8  133856.0    130528    504958      40552.1  void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::func_wrappâ?▌
+      0.1           177760        220     808.0     800.0       768      1024         48.9  void at::native::vectorized_elementwise_kernel<(int)4, at::native::sqrt_kernel_cuda(at::TensorIteraâ?▌
+      0.1           161376          1  161376.0  161376.0    161376    161376          0.0  void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::MeanOps<flâ?▌
+      0.1           159039        220     722.9     640.0       607      1632        193.5  void at::native::vectorized_elementwise_kernel<(int)4, at::native::AUnaryFunctor<float, float, floaâ?▌
+      0.1           146206        220     664.6     640.0       607      1056         86.8  void at::native::vectorized_elementwise_kernel<(int)4, at::native::CUDAFunctorOnSelf_add<float>, stâ?▌
+      0.1           133407          1  133407.0  133407.0    133407    133407          0.0  void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<float, (int)4, void at::natâ?▌
+      0.0              896          1     896.0     896.0       896       896          0.0  void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<float>, std::array<câ?▌
+
+       Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)                                                  Name
+ --------  ---------------  ---------  --------  --------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
+     99.6         76282162        220  346737.1  346143.0    284319    383902       7427.4  rmsnorm_kernal
+      0.2           160767          1  160767.0  160767.0    160767    160767          0.0  void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::MeanOps<flâ?▌
+      0.2           131839          1  131839.0  131839.0    131839    131839          0.0  void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<float, (int)4, void at::natâ?▌
+      0.0              896          1     896.0     896.0       896       896          0.0  void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<float>, std::array<câ?▌
