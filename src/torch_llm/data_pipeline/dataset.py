@@ -26,22 +26,21 @@ class TokenSequenceDataset(t.utils.data.Dataset):
         return seq
 
     @classmethod
-    def from_training_text(
+    def from_training_texts(
             cls,
-            texts,
+            texts: Iterable[str],
             tokenizer,
             model_max_seq_len,
     ):
-        sequences = []
+        token_ids = []
 
         for text in texts:
-            sequences.extend(tokenizer.encode(text))
-            sequences.append(tokenizer.eos_token_id)
-
+            token_ids.extend(tokenizer.encode(text))
+            token_ids.append(tokenizer.eos_token_id)
 
         chunks = cls.chunks_of(
-            sequences,
-            model_max_seq_len + 1
+            token_ids,
+            model_max_seq_len,
         )
 
         return cls(

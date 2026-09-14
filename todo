@@ -1,32 +1,30 @@
 Muon:
-expert 0 matrix → Muon transform
-expert 1 matrix → Muon transform
-...
-expert E-1 matrix → Muon transform
-
-Eventually this is a beautiful candidate for:
-batched Newton–Schulz
-and potentially a custom Triton kernel.
-For the first implementation, however, we can use batched PyTorch matrix multiplication.
 
 
-from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import ByteLevel
-from tokenizers.decoders import ByteLevel as ByteLevelDecoder
+generation
+→ inference boundary/runtime
+→ cache interface
+→ Muon optimization
+→ kernel profiling
+→ MoE diagnostics
+→ precision audit
+→ then paged KV / continuous batching
 
 
 
 
 
 
+
+
+large-scale:
+sharded/streaming dataset
+→ deterministic shard/document partitioning
 
 persistent/cache-aware scheduling
 
 Phase 5
 expert parallelism / distributed dispatch
-
 
 → paged KV cache + continuous batching
 → quantization
@@ -35,14 +33,7 @@ expert parallelism / distributed dispatch
 → then experimental architectures
 
 
-dont forget about paged block structured kv caches
-
-The next major architectural modernization after you finish MoE well would probably be modern inference
-infrastructure rather than immediately adding another exotic neural layer: paged KV cache, continuous
+dont forget about paged block structured kv caches, continuous
 batching, quantization, speculative decoding, and eventually distributed expert parallelism.
-That's where your current model starts turning from “modern architecture implementation” into
-“modern serving system.”
-
-optimization through MUON
 
 later potentially switch rmsnorm to alternative whole padded row load

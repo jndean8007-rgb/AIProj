@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+import time
+
 import torch as t
 import torch.nn.functional as F
 
@@ -34,11 +36,14 @@ def train_step(
     batch_max_seq_len: int
 
     '''
+
     # 1. clear old gradients
     muon.zero_grad(set_to_none=True)
     adamw.zero_grad(set_to_none=True)
 
+
     # 3. model forward
+
     model_output = model(
         token_ids=batch.token_ids,
         cu_seqlens=batch.cu_seqlens,
@@ -47,14 +52,18 @@ def train_step(
         mode="train",
         kv_caches=None
     )
+
     moe_stats = model_output.moe_stats
     aux_loss = model_output.aux_loss
+
 
     # 4. calculate language-model loss
     lm_loss = F.cross_entropy(model_output.logits.float(), batch.targets)
 
+
     # 5. combine with MoE auxiliary loss
     loss = lm_loss + aux_loss_weight * aux_loss
+
 
     # 6. backward #for now entirety, later can introduce microbatches
     loss.backward()
@@ -65,6 +74,7 @@ def train_step(
 
     else:
         grad_norm = None
+
 
     # 8. optimizer updates
     #    Muon
@@ -79,6 +89,7 @@ def train_step(
     if adamw_scheduler is not None:
         adamw_scheduler.step()
 
+
     # 10. return metrics
     return TrainStepOutput(
         loss=loss,
@@ -86,6 +97,8 @@ def train_step(
         aux_loss=aux_loss,
         grad_norm=None if grad_norm is None else grad_norm.detach(),
     )
+
+
 '''
 later return:
 learning rates

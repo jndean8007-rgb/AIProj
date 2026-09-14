@@ -27,7 +27,7 @@ class Attention(nn.Module):
         self.q_proj = nn.Linear(d_model, num_q_heads * head_dim, bias=False)
         self.k_proj = nn.Linear(d_model, num_kv_heads * head_dim, bias=False)
         self.v_proj = nn.Linear(d_model, num_kv_heads * head_dim, bias=False)
-        self.o_proj = nn.Linear(d_model, num_q_heads * head_dim, bias=False)
+        self.o_proj = nn.Linear(num_q_heads * head_dim, d_model, bias=False)
 
         self.rope = RoPE(head_dim, model_max_seq_len, theta)
 

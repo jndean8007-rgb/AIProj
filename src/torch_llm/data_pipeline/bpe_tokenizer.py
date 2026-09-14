@@ -4,23 +4,25 @@ from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
-
+from pathlib import Path
 
 class BPETokenizer:
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, config):
         self.tokenizer = tokenizer
+        self.config = config
 
     @classmethod
     def from_config(cls, config):
         tokenizer = Tokenizer(
             BPE(unk_token=config.unk_token),
         )
+
         tokenizer.pre_tokenizer = ByteLevel(
             add_prefix_space=False
         )
         tokenizer.decoder = ByteLevelDecoder()
 
-        return cls(tokenizer)
+        return cls(tokenizer, config)
 
     def train(self, config: BPETokenizerConfig, *paths):
         trainer = BpeTrainer(
@@ -30,7 +32,7 @@ class BPETokenizer:
         )
 
         self.tokenizer.train(
-            files=list(paths),
+            files=[str(path) for path in paths],
             trainer=trainer
         )
 
@@ -44,9 +46,16 @@ class BPETokenizer:
         self.tokenizer.save(path)
 
     @classmethod
-    def load(cls, path):
-        return cls(Tokenizer.from_file(path))
+    def load(cls, path, config):
+        return cls(Tokenizer.from_file(path), config)
 
     @property
     def eos_token_id(self):
-        return self.tokenizer.eos_token_id
+        token_id = self.tokenizer.token_to_id(
+            self.config.eos_token
+        )
+
+        if token_id is None:
+            raise ValueError("EOS token is not in the vocabulary")
+
+        return token_id

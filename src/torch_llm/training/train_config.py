@@ -3,22 +3,18 @@ from dataclasses import dataclass
 
 @dataclass
 class TrainConfig:
-    total_steps: int
-    scheduler_total_steps: int
-    scheduler_warmup_steps: int
+    total_steps: int = 2_000
+    warmup_steps: int = 100
+    min_lr_ratio: float = 0.1
 
-    total_steps: int
-    warmup_steps: int
-    min_lr_ratio: float
+    muon_lr: float = 5e-3
+    adamw_lr: float = 3e-4
+    weight_decay: float = 0.01
 
-    muon_lr: float
-    adamw_lr: float
-    weight_decay: float
+    log_interval: int = 100
+    checkpoint_dir: str = r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake"
+    checkpoint_interval: int = 500
+    eval_interval: int = 100
 
-    log_inteval: int
-    checkpoint_dir: str
-    checkpoint_interval: int
-    eval_interval: int
-
-    aux_loss_weight: float
-    max_grad_norm: float | None = None
+    aux_loss_weight: float = 0.01
+    max_grad_norm: float | None = 1.0

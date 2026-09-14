@@ -1,0 +1,4 @@
+#api: inference: generation takes user input, tokenizer, model, and later context + tools and database or something like that
+inference runtime owns kvcache
+input is prefilled and tokenized and then model iteratively decode outputs + detoknizes until some stop condition
+start with greedy sampling, then add temperature / top-k / top-p
