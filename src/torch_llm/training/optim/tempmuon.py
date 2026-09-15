@@ -1,8 +1,6 @@
+from torch_llm.kernals.muon_kernel_wrapper import muon_ns_kernal_wrapper
 
 def step(self):
-    params = t.empty()
-
-
     for group in self.param_groups:
         lr = group['lr']
         momentum = group['momentum']
@@ -19,18 +17,12 @@ def step(self):
 
             param.state['momentum_matrix'] = momentum * param.state['momentum_matrix'] + param.grad
 
-        if nesterov: ######### CANNOT DO THIS, MUST PRESERVE SHAPE METADATA AND PAD
-            Bs = t.stack([
-                momentum * param.state['momentum_matrix'] + param.grad
-                for param in params
-            ], dim=0)
+        if nesterov:
+            Bs = [momentum * param.state['momentum_matrix'] + param.grad for param in params]
         else:
-            Bs = t.tensor((params.shape[0],), momentum)
+            Bs = [param.state['momentum_matrix'] for param in params]
 
-        Bs = Bs.to(t.float32)
-
-
-        Os = muon_ns_step_wrapper(
+        Os = muon_ns_step_preprocess(
             Bs,
             ns_steps
         )
@@ -47,19 +39,44 @@ def step(self):
             param.add_(scaled_O, alpha=-lr)
 
 
-def muon_ns_step_wrapper(Bs, ns_steps):
-    '''
-    prepare kernel
-          ↓
-    grouped A = X Xᵀ
-          ↓
-    grouped Y = A X
-          ↓
-    grouped Z = A Y
-          ↓
-    grouped X update
-          ↓
-    repeat NS iterations
-          ↓
-    parameter update kernel
-    '''
+def muon_ns_step_preprocess(
+        Bs, ns_steps
+) -> list[t.Tensor]:
+
+    #preserve dimensions
+    orig_B_dims = t.tensor([
+        (B.shape[0], B.shape[1]) for B in Bs
+    ]).to(dtype=t.long, device='cuda')
+
+    #transpose each B such that is longer ie width > height for memory intermediate tensor and pack
+    b_buffer = t.cat([
+        B.transpose(-1, -2).reshape(-1) if B.shape[-2] > B.shape[-1]
+        else B.reshape(-1)
+        for B in Bs
+    ])
+
+    return muon_ns_kernal_wrapper(
+        b_buffer,
+        orig_B_dims,
+        ns_steps
+    )
+
+
+
+
+
+
+'''
+pass parameters through as buffer: ie 1 dimensional long tensor
+must also pass original tensor metadata to resolve dimensions in kernals.
+convert to floating point 32
+
+spawn worker threads in kernal for stacked parameter matrics
+Kernals: -- must use masking for appropriate passage
+frob normalization kernal for Bs
+A = XXT
+Y = AX
+Xnew = aX + bY +cAY
+
+
+'''

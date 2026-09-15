@@ -2,6 +2,7 @@ import math
 
 import torch as t
 from torch.optim import Optimizer
+import torch.nn.functional as F
 
 
 
@@ -58,7 +59,7 @@ class Muon(Optimizer):
                 if nesterov is True:
                     B = momentum * state['momentum_matrix'] + p.grad
                 else:
-                    B = momentum
+                    B = state['momentum_matrix']
 
                 # 4. convert update to FP32 if appropriate
                 B = B.to(t.float32)
@@ -131,8 +132,3 @@ def zeropower_via_newton_schulz(
 
     return x
 
-def zeropower_via_newton_schulz_wrapper(
-        B: t.Tensor,
-        steps: int,
-):
-    

@@ -1,7 +1,6 @@
 
 
-Nesterov: preserve original shape metadata, pass padded batched parameters into our kernals,
-must be the 'same shape' so will pad.
+
 
 
 
