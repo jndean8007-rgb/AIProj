@@ -63,15 +63,12 @@ class Muon(Optimizer):
                 # 4. convert update to FP32 if appropriate
                 B = B.to(t.float32)
                 # 5. orthogonalize matrix update
-                #    Newton-Schulz
-
-                O = zeropower_via_newton_schulz(B, steps=ns_steps).to(t.float32)
-
-                # 6. scale transformed update - s(m,n) scales O
-                #original  muon shape scaling
+                #    Newton-Schulz and combine scale to reduce memory
+                #    scale transformed update - s(m,n) scales O
+                #  #original  muon shape scaling
                 fan_out, fan_in = p.grad.shape[-2:]
                 scale = math.sqrt(max(1, (fan_out / fan_in)))
-                scaled_O = O * scale
+                scaled_O = zeropower_via_newton_schulz(B, steps=ns_steps) * scale
 
                 # 7. decoupled weight decay if desired
                 p.mul_(1-lr*weight_decay)
@@ -133,3 +130,9 @@ def zeropower_via_newton_schulz(
     #    this is the orthogonalized / polar Muon update
 
     return x
+
+def zeropower_via_newton_schulz_wrapper(
+        B: t.Tensor,
+        steps: int,
+):
+    

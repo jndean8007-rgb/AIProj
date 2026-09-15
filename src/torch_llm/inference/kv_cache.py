@@ -1,5 +1,7 @@
 import torch as t
 
+#need to implement it such that certain batches are removed upon removing from active cache indices
+
 class KVCache:
     def __init__(self,
                  batch_size,
@@ -20,16 +22,17 @@ class KVCache:
         self.seq_lens = t.zeros((batch_size,), dtype=t.int32, device=device)
 
 
-    def append_decode(self, new_k, new_v):
+    def append_decode(self, new_k, new_v, cache_slots: list[int] | None = None):
 
         assert new_k.shape == new_v.shape
         assert new_k.shape == (self.batch_size, self.num_kv_heads, self.head_dim)
         assert t.all(self.seq_lens < self.cache_max_seq_len).item()
 
-        batch_indices = t.arange(self.batch_size, device=self.k_cache.device)
+        if cache_slots is None:
+            cache_slots = t.arange(self.batch_size, device=self.k_cache.device)
 
-        self.k_cache[batch_indices, self.seq_lens] = new_k
-        self.v_cache[batch_indices, self.seq_lens] = new_v
+        self.k_cache[cache_slots, self.seq_lens] = new_k
+        self.v_cache[cache_slots, self.seq_lens] = new_v
 
         self.seq_lens += 1
 
@@ -67,5 +70,7 @@ class KVCache:
         self.v_cache[batch_ids, new_cache_positions] = new_v
 
         self.seq_lens += new_seq_lens
+
+
 
 

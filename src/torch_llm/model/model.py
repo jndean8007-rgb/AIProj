@@ -54,9 +54,14 @@ class TransformerLM(nn.Module):
             cu_seqlens: Shaped[t.Tensor, 'B+1'],
             token_positions: Shaped[t.Tensor, 'T'],
             batch_max_seq_len: int,
+            kv_caches=None, # at model level length = num layers
+            cache_slots=None,
             mode: Literal['train', 'prefill', 'decode'] = 'train',
-            kv_caches=None #at model level length = num layers
     ):
+
+        if cache_slots is not None:
+            cache_slots = t.tensor(cache_slots, dtype=t.long)
+
         moe_stats = []
 
         x = self.embedding(token_ids)
@@ -70,7 +75,8 @@ class TransformerLM(nn.Module):
                 token_positions=token_positions,
                 batch_max_seq_len=batch_max_seq_len,
                 mode=mode,
-                kv_cache=layer_cache
+                kv_cache=layer_cache,
+                cache_slots=cache_slots,
             )
 
             moe_stats.append(stats)

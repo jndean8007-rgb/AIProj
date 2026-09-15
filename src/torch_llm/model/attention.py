@@ -37,6 +37,7 @@ class Attention(nn.Module):
                 batch_max_seq_len,
                 mode: Literal['train', 'prefill', 'decode'] = 'train',
                 kv_cache=None,
+                cache_slots=None,
                 attention_mask=None,
                 ):
         assert mode in ("train", "prefill", "decode")
@@ -63,12 +64,12 @@ class Attention(nn.Module):
 
         elif mode == 'decode':
             assert kv_cache is not None
-            kv_cache.append_decode(k_rope, v)
+            kv_cache.append_decode(k_rope, v, cache_slots)
             attention_output = decode_attention_wrapper(
                 q_rope,
-                kv_cache.k_cache,
-                kv_cache.v_cache,
-                kv_cache.seq_lens,
+                kv_cache.k_cache[cache_slots],
+                kv_cache.v_cache[cache_slots],
+                kv_cache.seq_lens[cache_slots],
             )
 
         else:
