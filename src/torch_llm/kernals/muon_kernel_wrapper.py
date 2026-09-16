@@ -9,7 +9,7 @@ def muon_ns_kernal_wrapper(
         nesterov_mmtm_matrices_buffer: Shaped[t.Tensor, "tp"],
         orig_mmtm_matrices_metadata: Shaped[t.Tensor, "p 2"],
         ns_steps,
-):
+) -> Shaped[t.Tensor, "tp"]:
     '''
     Takes flat B matrices concatenated such that all parameters along 1 dim.
     Generally parameter matrices are taken from same parameter group.
@@ -23,8 +23,9 @@ def muon_ns_kernal_wrapper(
     Y = AX kernal.
     Xnew = aX + bY + cAY kernal.
     As in Newton-Schulz algorithm, iterates through latter 3 kernals ns_steps.
+    :param ns_steps:
+    :param orig_mmtm_matrices_metadata:
     :param nesterov_mmtm_matrices_buffer:
-    :param orig_param_metadata:
     :return:
     '''
 
@@ -116,10 +117,13 @@ def muon_ns_kernal_wrapper(
         sum(param.shape[0] ** 2 for param in orig_mmtm_matrices_metadata),
     ), dtype=t.float32, device=current_buffer.device) #buffer representation to make life easier, real shape per param is (M, M)
 
-    Y = t.empty
+    #original shape is (M, K). same as orig params because (M, M) (M, K)
+    Y = t.empty((
+        sum(param.shape[0] * param.shape[1] for param in orig_mmtm_matrices_metadata),
+    ), dtype=t.float32, device=current_buffer.device)
 
-
-
+    # original shape is (M, K). same as orig params (M, M) (M, K)
+    Z = t.empty_like(Y)
 
 
     for _ in range(ns_steps):
@@ -129,6 +133,24 @@ def muon_ns_kernal_wrapper(
         BLOCK_M = 64  # output row
         BLOCK_N = 64  # output column
         BLOCK_K = 64  # reducing over XXT: (M, K) (K, M) -> (M, M)
+
+        '''
+        Idea: Passing in stream of parameters. must pass shape data to determine offsets and masks.
+        Each worker owns an output row in A, an output Column in A, and the K (2nd) dimension of X is summed over.
+        This works because the first dimension of X and A are the same so its the same block. 
+        We therefore can fill a tile of A without having to compute running sums and needing more kernals.
+        '''
+        #need to know: matrix column count for block k mask and total num k starts,
+        #matrix row count for row based masking m and m offsets 0 based on k column count
+        #total length up to point to determine beginning indices
+        #can in some sense mirror store location to beginning of parameter + row num. However, need
+        #way to determine which column output it is. Must resolve from program id.
+        #programs per param (cdiving for n and m) repeat interleave arange ->
+        #within block = currentpid - aranged[pid]. num_ns = paramwidth cdiv blockn. col = winblockpid % num_ns
+        #row = winblockpid // numns
+
+
+
 
 
 
