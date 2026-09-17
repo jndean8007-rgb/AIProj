@@ -4,6 +4,8 @@ import triton.language as tl
 import math
 from jaxtyping import Shaped
 from muon.frobenius_norm import frobenius_norm_partial_sum_kernal, frobenius_norm_normalize_kernal
+from torch_llm.kernals.muon.iterative_approx import ns_x_xtrans_kernel
+
 
 def muon_ns_kernal_wrapper(
         nesterov_mmtm_matrices_buffer: Shaped[t.Tensor, "tp"],
@@ -71,7 +73,7 @@ def muon_ns_kernal_wrapper(
 
 
     #simple pid table. not extremely memory efficient, but compared to other memory sinks is negligible for now
-    mmtm_matrices_arranged = t.arange(nesterov_mmtm_matrices_buffer.shape[0], dtype=t.float32, device="cuda")
+    mmtm_matrices_arranged = t.arange(orig_mmtm_matrices_metadata.shape[0], dtype=t.int32, device="cuda")
 
     pid_to_mmtm_mat = t.repeat_interleave(
         mmtm_matrices_arranged,
@@ -148,6 +150,60 @@ def muon_ns_kernal_wrapper(
         #programs per param (cdiving for n and m) repeat interleave arange ->
         #within block = currentpid - aranged[pid]. num_ns = paramwidth cdiv blockn. col = winblockpid % num_ns
         #row = winblockpid // numns
+        #grid = sum of workers
+
+
+
+        programs_per_group = t.tensor([
+            (group.shape[0] + BLOCK_M - 1) // BLOCK_M * (group.shape[0] + BLOCK_N - 1) // BLOCK_N
+            for group in A
+        ], dtype=t.long, device=current_buffer.device)
+
+        cum_group_programs = t.cat([
+            t.zeros(
+                1,
+                dtype=t.long,
+                device=current_buffer.device,
+            ),
+            programs_per_group.cumsum(dim=0)
+        ])
+
+        num_workers = t.sum(programs_per_group, dim=0)
+        grid = (num_workers,)
+
+
+        groups_arranged = t.arange(A.shape[0], dtype=t.long, device=current_buffer.device)
+
+        pid_to_group = t.repeat_interleave(
+            groups_arranged,
+            repeats=programs_per_group,
+        )
+
+        group_dims = t.tensor(
+            [group.shape[0] * group.shape[0] for group in A],
+            device=current_buffer.device,
+            dtype=t.long,
+        )
+
+        lengths_cumsum = t.cat([
+            t.zeros(1, device=current_buffer.device, dtype=t.long),
+            group_dims.cumsum(dim=0),
+        ])
+
+        ns_x_xtrans_kernel[grid](
+            A,
+            current_buffer,
+
+            pid_to_group,
+            lengths_cumsum,
+            cum_group_programs,
+            group_dims,
+
+            BLOCK_M,
+            BLOCK_N,
+            BLOCK_K,
+        )
+
 
 
 
