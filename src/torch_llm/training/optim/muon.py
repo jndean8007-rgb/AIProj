@@ -58,7 +58,7 @@ class Muon(Optimizer):
             for idx, param in enumerate(params):
                 fan_out, fan_in = param.grad.shape[-2:]
                 scale = math.sqrt(max(1, (fan_out / fan_in)))
-                scaled_O = Os[idx, ...] * scale
+                scaled_O = Os[idx] * scale
 
                 # 7. decoupled weight decay if desired
                 param.mul_(1 - lr * weight_decay)
@@ -70,10 +70,18 @@ def muon_ns_step_process(
         Bs, ns_steps
 ) -> list[t.Tensor]:
 
-    # preserve dimensions
-    orig_B_dims = t.tensor([
-        (B.shape[0], B.shape[1]) for B in Bs
-    ]).to(dtype=t.long, device='cuda')
+    flattened_dims = []
+
+    for B in Bs:
+        if B.dim() == 3:
+            num_experts, rows, cols = B.shape
+            flattened_dims.extend([(rows, cols)] * num_experts)
+        else:
+            flattened_dims.append((B.shape[0], B.shape[1]))
+
+    B_dims_flattened = t.tensor(flattened_dims, dtype=t.long, device='cuda')
+
+
 
     # transpose each B such that is longer ie width > height for memory intermediate tensor and pack
     b_buffer = t.cat([
@@ -84,7 +92,7 @@ def muon_ns_step_process(
 
     singular_direction_buffer = muon_ns_kernal_wrapper(
         b_buffer,
-        orig_B_dims,
+        B_dims_flattened,
         ns_steps
     )  # shape is same as input Buffer
 
@@ -93,17 +101,33 @@ def muon_ns_step_process(
     start = 0
 
     for B in Bs:
-        rows, cols = B.shape
-        length = rows * cols
+        if B.dim() == 2:
+            rows, cols = B.shape
+            length = rows * cols
 
-        buffer_seq = singular_direction_buffer[start:start + length]
+            buffer_seq = singular_direction_buffer[start:start + length]
 
-        if rows > cols:
-            O = buffer_seq.reshape(cols, rows).transpose(-1, -2)
-        else:
-            O = buffer_seq.reshape(rows, cols)
+            if rows > cols:
+                O = buffer_seq.reshape(cols, rows).transpose(-1, -2)
+            else:
+                O = buffer_seq.reshape(rows, cols)
 
-        resolved_directions.append(O)
+            resolved_directions.append(O)
+
+
+        elif B.dim() == 3:
+            num_experts, rows, cols = B.shape
+
+            length = num_experts * rows * cols
+
+            buffer_seq = singular_direction_buffer[start:start + length]
+
+            if rows > cols:
+                O = buffer_seq.reshape(num_experts, cols, rows).transpose(-1, -2)
+            else:
+                O = buffer_seq.reshape(num_experts, rows, cols)
+
+            resolved_directions.append(O)
 
         start += length
 
