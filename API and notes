@@ -1,0 +1,5 @@
+for group in A	A is a flat tensor, so each group is a scalar	schedule from metadata
+A.shape[0] for group count	That's total elements of A	orig_metadata.shape[0]
+for x in current_buffer + x.shape	each x is a scalar because buffer is flat	derive dimensions from metadata
+for x in Y ... Y.shape[:2]	potentially creates an enormous nonsense list	derive dimensions from metadata
+final resolve launch	missing END_LENGTH argument	pass current_buffer.numel()

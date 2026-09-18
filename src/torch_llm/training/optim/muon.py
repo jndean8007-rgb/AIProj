@@ -38,20 +38,19 @@ class Muon(Optimizer):
             nesterov = group['nesterov']
             params = group['params']
 
-            Bs = t.empty((params.shape[0],))
-
             for param in params:
-                if 'momentum_matrix' not in param.state:
-                    param.state['momentum_matrix'] = t.zeros_like(param).to(dtype=t.float32)
+                state = self.state[param]
+                if 'momentum_matrix' not in state:
+                    state['momentum_matrix'] = t.zeros_like(param).to(dtype=t.float32)
 
-                param.state['momentum_matrix'] = momentum * param.state['momentum_matrix'] + param.grad
+                state['momentum_matrix'].mul_(momentum).add_(param.grad)
 
             if nesterov:
-                Bs = [momentum * param.state['momentum_matrix'] + param.grad for param in params]
+                Bs = [momentum * self.state[param]['momentum_matrix'] + param.grad for param in params]
             else:
-                Bs = [param.state['momentum_matrix'] for param in params]
+                Bs = [self.state[param]['momentum_matrix'] for param in params]
 
-            Os = muon_ns_step_preprocess(
+            Os = muon_ns_step_process(
                 Bs,
                 ns_steps
             )
@@ -67,7 +66,7 @@ class Muon(Optimizer):
                 # 8. update parameter
                 param.add_(scaled_O, alpha=-lr)
 
-def muon_ns_step_preprocess(
+def muon_ns_step_process(
         Bs, ns_steps
 ) -> list[t.Tensor]:
 
@@ -77,20 +76,38 @@ def muon_ns_step_preprocess(
     ]).to(dtype=t.long, device='cuda')
 
     # transpose each B such that is longer ie width > height for memory intermediate tensor and pack
-    transposed = [ B.shape[-2] > B.shape[-1] for B in Bs]
-
     b_buffer = t.cat([
-        B.transpose(-1, -2).reshape(-1) if transpose
+        B.transpose(-1, -2).reshape(-1) if B.shape[-2] > B.shape[-1]
         else B.reshape(-1)
-        for B, transpose in zip(Bs, transposed)
+        for B in Bs
     ])
 
-    update_approx_buffer = muon_ns_kernal_wrapper(
+    singular_direction_buffer = muon_ns_kernal_wrapper(
         b_buffer,
         orig_B_dims,
-        ns_steps,
-    )
-    #unpack, restore orientation to orig shapes, return
+        ns_steps
+    )  # shape is same as input Buffer
+
+    resolved_directions = []
+
+    start = 0
+
+    for B in Bs:
+        rows, cols = B.shape
+        length = rows * cols
+
+        buffer_seq = singular_direction_buffer[start:start + length]
+
+        if rows > cols:
+            O = buffer_seq.reshape(cols, rows).transpose(-1, -2)
+        else:
+            O = buffer_seq.reshape(rows, cols)
+
+        resolved_directions.append(O)
+
+        start += length
+
+    return resolved_directions
 
 
     '''

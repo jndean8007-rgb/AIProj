@@ -20,13 +20,13 @@ def ns_x_xtrans_kernel(
     pid = tl.program_id(0)
     group = tl.load(pid_to_group_ptr + pid)
 
-    A_start = tl.load(A_length_cumsums_ptr + group)
-    A_end = tl.load(A_length_cumsums_ptr + group + 1)
+    A_start = tl.load(A_length_cumsums_ptr + group).to(tl.int64)
+    A_end = tl.load(A_length_cumsums_ptr + group + 1).to(tl.int64)
 
-    local_program = pid - tl.load(cum_group_programs_ptr + group)
-    A_shape = tl.sqrt(tl.load(A_group_dims_ptr + group))
+    local_program = (pid - tl.load(cum_group_programs_ptr + group)).to(tl.int64)
+    A_shape = tl.load(X_dims_ptr + 2 * group).to(tl.int64)
 
-    tiles_N = tl.ceil(A_shape, BLOCK_N)
+    tiles_N = tl.cdiv(A_shape, BLOCK_N)
 
     A_col_start = local_program % tiles_N #tile indices
     A_row_start = local_program // tiles_N #tile indices
@@ -48,11 +48,11 @@ def ns_x_xtrans_kernel(
 
     A_tile_value = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-    x_start = tl.load(X_length_cumsums_ptr + group)
-    x_end = tl.load(X_length_cumsums_ptr + group + 1)
+    x_start = tl.load(X_length_cumsums_ptr + group).to(tl.int64)
+    x_end = tl.load(X_length_cumsums_ptr + group + 1).to(tl.int64)
 
-    x_height = tl.load(X_dims_ptr + 2 * group)
-    x_width = tl.load(X_dims_ptr + 2 * group + 1)
+    x_height = tl.load(X_dims_ptr + 2 * group).to(tl.int64)
+    x_width = tl.load(X_dims_ptr + 2 * group + 1).to(tl.int64)
 
     for K_START in range(0, x_width, BLOCK_K):
         k_offsets = K_START + tl.arange(0, BLOCK_K)
@@ -71,7 +71,7 @@ def ns_x_xtrans_kernel(
 
         x_row_mask = (
             (row_offsets[:, None] < x_height)
-            & (k_offsets[:, None] < x_width)
+            & (k_offsets[None, :] < x_width)
         )
 
         x_col_mask = (
@@ -81,7 +81,7 @@ def ns_x_xtrans_kernel(
 
         x = tl.load(
             x_ptr + x_row_positions,
-            mask=x_col_mask,
+            mask=x_row_mask,
             other=0.0,
         )
 
@@ -91,13 +91,14 @@ def ns_x_xtrans_kernel(
             other=0.0,
         )
 
-        A_tile_value += tl.dot(x, x_trans)
+        A_tile_value += tl.dot(x, tl.trans(x_trans), input_precision="ieee")
 
     tl.store(
         a_ptr + A_pos,
         A_tile_value,
         mask=A_store_mask
     )
+
 
 
 @triton.jit()
@@ -121,19 +122,19 @@ def ns_a_x_kernel(
     pid = tl.program_id(0)
     group = tl.load(pid_to_group_ptr + pid)
 
-    A_start = tl.load(A_length_cumsums_ptr + group)
-    A_end = tl.load(A_length_cumsums_ptr + group + 1)
+    A_start = tl.load(A_length_cumsums_ptr + group).to(tl.int64)
+    A_end = tl.load(A_length_cumsums_ptr + group + 1).to(tl.int64)
 
-    local_program = pid - tl.load(cum_group_programs_ptr + group)
-    A_shape = tl.sqrt(tl.load(A_group_dims_ptr + group))
+    local_program = (pid - tl.load(cum_group_programs_ptr + group)).to(tl.int64)
+    A_shape = tl.load(X_dims_ptr + 2 * group).to(tl.int64)
 
-    yx_start = tl.load(X_length_cumsums_ptr + group)
-    yx_end = tl.load(X_length_cumsums_ptr + group + 1)
+    yx_start = tl.load(X_length_cumsums_ptr + group).to(tl.int64)
+    yx_end = tl.load(X_length_cumsums_ptr + group + 1).to(tl.int64)
 
-    yx_height = tl.load(X_dims_ptr + 2 * group)
-    yx_width = tl.load(X_dims_ptr + 2 * group + 1)
+    yx_height = tl.load(X_dims_ptr + 2 * group).to(tl.int64)
+    yx_width = tl.load(X_dims_ptr + 2 * group + 1).to(tl.int64)
 
-    tiles_N = tl.ceil(yx_width, BLOCK_N)
+    tiles_N = tl.cdiv(yx_width, BLOCK_N)
 
     y_row_start = local_program // tiles_N
     y_col_start = local_program % tiles_N
@@ -170,7 +171,7 @@ def ns_a_x_kernel(
             + col_offsets[None, :]
         )
 
-        A_mask = k_mask[:, None] & y_row_mask[None, :] # looks counterintuitive but i was lazy so i reused
+        A_mask = y_row_mask[:, None] & k_mask[None, :]
 
         x_mask = k_mask[:, None] & y_col_mask[None, :]
 
@@ -186,13 +187,14 @@ def ns_a_x_kernel(
             other=0.0,
         )
 
-        y_tile_vals += tl.dot(A_tile, x_tile)
+        y_tile_vals += tl.dot(A_tile, x_tile, input_precision="ieee")
 
     tl.store(
         y_ptr + y_pos,
         y_tile_vals,
         mask=y_mask,
     )
+
 
 @triton.jit()
 def ns_a_y_kernel(
@@ -214,19 +216,19 @@ def ns_a_y_kernel(
     pid = tl.program_id(0)
     group = tl.load(pid_to_group_ptr + pid)
 
-    A_start = tl.load(A_length_cumsums_ptr + group)
-    A_end = tl.load(A_length_cumsums_ptr + group + 1)
+    A_start = tl.load(A_length_cumsums_ptr + group).to(tl.int64)
+    A_end = tl.load(A_length_cumsums_ptr + group + 1).to(tl.int64)
 
-    local_program = pid - tl.load(cum_group_programs_ptr + group)
-    A_shape = tl.sqrt(tl.load(A_group_dims_ptr + group))
+    local_program = (pid - tl.load(cum_group_programs_ptr + group)).to(tl.int64)
+    A_shape = tl.load(Y_dims_ptr + 2 * group).to(tl.int64)
 
-    z_start = tl.load(Y_length_cumsums_ptr + group)
-    z_end = tl.load(Y_length_cumsums_ptr + group + 1)
+    z_start = tl.load(Y_length_cumsums_ptr + group).to(tl.int64)
+    z_end = tl.load(Y_length_cumsums_ptr + group + 1).to(tl.int64)
 
-    z_height = tl.load(Y_dims_ptr + 2 * group)
-    z_width = tl.load(Y_dims_ptr + 2 * group + 1)
+    z_height = tl.load(Y_dims_ptr + 2 * group).to(tl.int64)
+    z_width = tl.load(Y_dims_ptr + 2 * group + 1).to(tl.int64)
 
-    tiles_N = tl.ceil(z_width, BLOCK_N)
+    tiles_N = tl.cdiv(z_width, BLOCK_N)
 
     z_row_start = local_program // tiles_N
     z_col_start = local_program % tiles_N
@@ -263,7 +265,7 @@ def ns_a_y_kernel(
                 + col_offsets[None, :]
         )
 
-        A_mask = k_mask[:, None] & z_row_mask[None, :]  # looks counterintuitive but i was lazy so i reused
+        A_mask = z_row_mask[:, None] & k_mask[None, :]
 
         y_mask = k_mask[:, None] & z_col_mask[None, :]
 
@@ -279,13 +281,14 @@ def ns_a_y_kernel(
             other=0.0,
         )
 
-        z_tile_vals += tl.dot(A_tile, y_tile)
+        z_tile_vals += tl.dot(A_tile, y_tile, input_precision="ieee")
 
     tl.store(
         z_ptr + z_pos,
         z_tile_vals,
         mask=z_mask,
     )
+
 
 @triton.jit()
 def ns_x_resolve_kernel(
@@ -301,14 +304,14 @@ def ns_x_resolve_kernel(
         BLOCK_SIZE: tl.constexpr, # simply iterating through in chunks because all are same dims
 ):
     pid = tl.program_id(0)
-    block = pid * BLOCK_SIZE
+    block = pid.to(tl.int64) * BLOCK_SIZE
 
     block_offsets = block + tl.arange(0, BLOCK_SIZE)
     block_mask = block_offsets < end_length
 
-    x_tile = tl.load(x_ptr + block_offsets, mask=block_mask, other=0.0)
-    y_tile = tl.load(y_ptr + block_offsets, mask=block_mask, other=0.0)
-    z_tile = tl.load(z_ptr + block_offsets, mask=block_mask, other=0.0)
+    x_tile = tl.load(x_ptr + block_offsets, mask=block_mask, other=0.0).to(tl.float32)
+    y_tile = tl.load(y_ptr + block_offsets, mask=block_mask, other=0.0).to(tl.float32)
+    z_tile = tl.load(z_ptr + block_offsets, mask=block_mask, other=0.0).to(tl.float32)
 
     tl.store(
         x_ptr + block_offsets,

@@ -6,82 +6,98 @@ from jaxtyping import Shaped
 from torch import device
 
 from muon.frobenius_norm import frobenius_norm_partial_sum_kernal, frobenius_norm_normalize_kernal
-from torch_llm.kernals.muon.iterative_approx import ns_x_xtrans_kernel
+from torch_llm.kernals.muon.iterative_approx import ns_x_xtrans_kernel, ns_a_x_kernel, ns_a_y_kernel, \
+    ns_x_resolve_kernel
 
-
+@t.no_grad()
 def muon_ns_kernal_wrapper(
         nesterov_mmtm_matrices_buffer: Shaped[t.Tensor, "tp"],
         orig_mmtm_matrices_metadata: Shaped[t.Tensor, "p 2"],
         ns_steps,
 ) -> Shaped[t.Tensor, "tp"]:
-    '''
-    Takes flat B matrices concatenated such that all parameters along 1 dim.
-    Generally parameter matrices are taken from same parameter group.
-    Works heterogeneously through masking and packing of parameters.
-    Parameter shapes may be inputted transposed as to reduce intermediate NS dims.
-    Preserves original parameter metadata to determine cuts, recreate shapes and output.
-    Passes through 4 kernals:
-    Frobenius normalization partial sum kernal.
-    Frobenius normalization  kernal.
-    A = XXT kernal.
-    Y = AX kernal.
-    Xnew = aX + bY + cAY kernal.
-    As in Newton-Schulz algorithm, iterates through latter 3 kernals ns_steps.
-    :param ns_steps:
-    :param orig_mmtm_matrices_metadata:
-    :param nesterov_mmtm_matrices_buffer:
-    :return:
-    '''
+    """Normalize and update packed original row-major matrices in place.
 
+    Metadata has shape (num_matrices, 2), with original (rows, cols).
+    Input must be a contiguous flat CUDA FP16, BF16, or FP32 tensor.
+    Tall matrices are transposed for the iteration, then restored.
+    Returns the input buffer, retaining its original layout and dtype.
+    """
     current_buffer = nesterov_mmtm_matrices_buffer
+    if not current_buffer.is_cuda or current_buffer.ndim != 1 or not current_buffer.is_contiguous():
+        raise ValueError("expected a contiguous flat CUDA buffer")
+    if current_buffer.dtype not in (t.float16, t.bfloat16, t.float32):
+        raise ValueError("expected float16, bfloat16, or float32")
+    if not isinstance(ns_steps, int) or ns_steps < 0:
+        raise ValueError("ns_steps must be a nonnegative integer")
+    if orig_mmtm_matrices_metadata.ndim != 2 or orig_mmtm_matrices_metadata.shape[1] != 2:
+        raise ValueError("metadata must contain one (rows, cols) pair per matrix")
+    if orig_mmtm_matrices_metadata.dtype not in (t.int32, t.int64):
+        raise ValueError("metadata must use int32 or int64")
 
-    #1 frobenius norm kernal pratial sum entry
-    # create partial sums buffer
-    # load global tiles into kernal
-    # use metadata to determine which global tile it is to know where to write to
-    # and what matrix to extract from
-    #load partial sums of chunks (not reducing, simply loading a tile) into partial sum buffer. NOT SQUARE ROOTED.
+    # host shapes just for packing and restoring the tall matrices
+    original_shapes = orig_mmtm_matrices_metadata.detach().cpu().tolist()
+    if any(r < 0 or c < 0 for r, c in original_shapes):
+        raise ValueError("matrix dimensions cannot be negative")
+    if sum(r * c for r, c in original_shapes) != current_buffer.numel():
+        raise ValueError("matrix lengths must add up to the buffer length")
+    if current_buffer.numel() == 0:
+        return current_buffer
 
-    ELEMENTS_PER_WORKER = 102400 #total elements per worker
-    BLOCK_SIZE = 1024 #number of elements summated per loop
+    orig_mmtm_matrices_metadata = orig_mmtm_matrices_metadata.to(
+        device=current_buffer.device,
+        dtype=t.long,
+    )
+    rows = orig_mmtm_matrices_metadata[:, 0]
+    cols = orig_mmtm_matrices_metadata[:, 1]
 
+    M = t.minimum(rows, cols)
+    K = t.maximum(rows, cols)
 
-    #extract required number of workers by summating total tiles required across all matrices
+    # min/max changes shape, so tall matrices need an actual transpose
+    start = 0
+    for r, c in original_shapes:
+        end = start + r * c
+        if r > c and r * c:
+            matrix = current_buffer[start:end].view(r, c)
+            current_buffer[start:end].copy_(matrix.t().contiguous().view(-1))
+        start = end
 
-    workers_per_mmtm_mat = t.tensor([
-        (rows * cols + ELEMENTS_PER_WORKER - 1) // ELEMENTS_PER_WORKER
-        for rows, cols in orig_mmtm_matrices_metadata
+    # 1 frobenius norm partial sum entry. NOT SQUARE ROOTED.
+    ELEMENTS_PER_WORKER = 102400  # total elements per worker
+    BLOCK_SIZE = 1024  # number of elements summated per loop
+
+    workers_per_mmtm_mat = (
+        rows * cols + ELEMENTS_PER_WORKER - 1
+    ) // ELEMENTS_PER_WORKER
+
+    # counts build the pid table, cumulative counts give each matrix its first pid
+    workers_cumsum = t.cat([
+        t.zeros(1, device=current_buffer.device, dtype=t.long),
+        workers_per_mmtm_mat.cumsum(dim=0),
     ])
 
-    workers_req = sum(
-        (rows * cols + ELEMENTS_PER_WORKER - 1) // ELEMENTS_PER_WORKER
-        for rows, cols in orig_mmtm_matrices_metadata
-    ) # dont want 7 million processes so larger block sizes
-
-
-    # need to extract using which matrix found to determine cutoff mask
     mmtm_lengths = t.prod(orig_mmtm_matrices_metadata, dim=1)
-
-    lengths_cumsum = tl.cat([
-        t.zeros(
-            1,
-            device = current_buffer.device,
-            dtype = current_buffer.dtype,
-        ),
-        mmtm_lengths.cumsum(dim=0)
+    lengths_cumsum = t.cat([
+        t.zeros(1, device=current_buffer.device, dtype=t.long),
+        mmtm_lengths.cumsum(dim=0),
     ])
 
-    partial_sums = t.zeros((orig_mmtm_matrices_metadata.shape[0],), dtype=t.float32, device="cuda")
+    partial_sums = t.zeros(
+        (orig_mmtm_matrices_metadata.shape[0],),
+        dtype=t.float32,
+        device=current_buffer.device,
+    )
 
-
-    #simple pid table. not extremely memory efficient, but compared to other memory sinks is negligible for now
-    mmtm_matrices_arranged = t.arange(orig_mmtm_matrices_metadata.shape[0], dtype=t.int32, device="cuda")
-
+    # simple pid table, each matrix repeated by its worker count
+    mmtm_matrices_arranged = t.arange(
+        orig_mmtm_matrices_metadata.shape[0], dtype=t.int32, device=current_buffer.device
+    )
     pid_to_mmtm_mat = t.repeat_interleave(
         mmtm_matrices_arranged,
         repeats=workers_per_mmtm_mat,
     )
 
+    workers_req = pid_to_mmtm_mat.numel()
     grid = (workers_req,)
 
     frobenius_norm_partial_sum_kernal[grid](
@@ -90,7 +106,7 @@ def muon_ns_kernal_wrapper(
 
         pid_to_mmtm_mat,
         lengths_cumsum,
-        workers_per_mmtm_mat,
+        workers_cumsum,
 
         ELEMENTS_PER_WORKER,
         BLOCK_SIZE,
@@ -102,104 +118,66 @@ def muon_ns_kernal_wrapper(
 
         pid_to_mmtm_mat,
         lengths_cumsum,
-        workers_per_mmtm_mat,
+        workers_cumsum,
         10e-8,
 
         ELEMENTS_PER_WORKER,
         BLOCK_SIZE,
     )
 
-    #now current buffer is normalized
-
-    #entering iteration stage
-
+    # now current buffer is normalized, entering iteration stage
     a = 3.4445
     b = -4.7750
     c = 2.0315
 
-    A = t.empty((
-        sum(param.shape[0] ** 2 for param in orig_mmtm_matrices_metadata),
-    ), dtype=t.float32, device=current_buffer.device) #buffer representation to make life easier, real shape per param is (M, M)
+    x_lengths = M * K
+    a_lengths = M * M
 
-    #original shape is (M, K). same as orig params because (M, M) (M, K)
-    Y = t.empty((
-        sum(param.shape[0] * param.shape[1] for param in orig_mmtm_matrices_metadata),
-    ), dtype=t.float32, device=current_buffer.device)
-
-    # original shape is (M, K). same as orig params (M, M) (M, K)
-    Z = t.empty_like(Y)
-
+    A = t.empty(
+        int(a_lengths.sum().item()),
+        dtype=current_buffer.dtype,  # dot operands need matching types
+        device=current_buffer.device,
+    )
+    Y = t.empty_like(current_buffer)
+    Z = t.empty_like(current_buffer)
 
     for _ in range(ns_steps):
-
-        #1st kernal pass current_buffer, A ptr (M, M) when loading, for now needs to be empty like new construction
-
+        # 1st kernal: XXT, output is (M, M)
         BLOCK_M = 64  # output row
         BLOCK_N = 64  # output column
-        BLOCK_K = 64  # reducing over XXT: (M, K) (K, M) -> (M, M)
+        BLOCK_K = 64  # reducing over K
 
-        '''
-        Idea: Passing in stream of parameters. must pass shape data to determine offsets and masks.
-        Each worker owns an output row in A, an output Column in A, and the K (2nd) dimension of X is summed over.
-        This works because the first dimension of X and A are the same so its the same block. 
-        We therefore can fill a tile of A without having to compute running sums and needing more kernals.
-        '''
-        #need to know: matrix column count for block k mask and total num k starts,
-        #matrix row count for row based masking m and m offsets 0 based on k column count
-        #total length up to point to determine beginning indices
-        #can in some sense mirror store location to beginning of parameter + row num. However, need
-        #way to determine which column output it is. Must resolve from program id.
-        #programs per param (cdiving for n and m) repeat interleave arange ->
-        #within block = currentpid - aranged[pid]. num_ns = paramwidth cdiv blockn. col = winblockpid % num_ns
-        #row = winblockpid // numns
-        #grid = sum of workers
-
-
-
-        programs_per_group = t.tensor([
-            (group.shape[0] + BLOCK_M - 1) // BLOCK_M * (group.shape[0] + BLOCK_N - 1) // BLOCK_N
-            for group in A
-        ], dtype=t.long, device=current_buffer.device)
+        programs_per_group = (
+            ((M + BLOCK_M - 1) // BLOCK_M)
+            * ((M + BLOCK_N - 1) // BLOCK_N)
+        )
 
         cum_group_programs = t.cat([
-            t.zeros(
-                1,
-                dtype=t.long,
-                device=current_buffer.device,
-            ),
-            programs_per_group.cumsum(dim=0)
+            t.zeros(1, dtype=t.long, device=current_buffer.device),
+            programs_per_group.cumsum(dim=0),
         ])
 
-        num_workers = t.sum(programs_per_group, dim=0)
-        grid = (num_workers,)
-
-        groups_arranged = t.arange(A.shape[0], dtype=t.long, device=current_buffer.device)
-
+        groups_arranged = t.arange(
+            orig_mmtm_matrices_metadata.shape[0], dtype=t.long, device=current_buffer.device
+        )
         pid_to_group = t.repeat_interleave(
             groups_arranged,
             repeats=programs_per_group,
         )
 
-        A_group_dims = t.tensor(
-            [group.shape[0] * group.shape[0] for group in A],
-            device=current_buffer.device,
-            dtype=t.long,
-        )
+        num_workers = pid_to_group.numel()  # python int for the grid
+        grid = (num_workers,)
 
+        A_group_dims = a_lengths
         A_lengths_cumsum = t.cat([
             t.zeros(1, device=current_buffer.device, dtype=t.long),
             A_group_dims.cumsum(dim=0),
         ])
 
-        buffer_dimensions = t.tensor(
-            [dim for x in current_buffer for dim in x.shape[:2]],
-            device=current_buffer.device,
-            dtype=t.long,
-        )
-
+        buffer_dimensions = t.stack((M, K), dim=1).contiguous()  # shape pairs, not lengths
         buffer_lengths_cumsum = t.cat([
             t.zeros(1, device=current_buffer.device, dtype=t.long),
-            buffer_dimensions.cumsum(dim=0),
+            x_lengths.cumsum(dim=0),
         ])
 
         ns_x_xtrans_kernel[grid](
@@ -218,11 +196,93 @@ def muon_ns_kernal_wrapper(
             BLOCK_K,
         )
 
-        #put through ns a y kernel, ns a z kernel, simple final add kernel
+        # next two kernals output (M, K), so rebuild the pid table
+        programs_per_group = (
+            ((M + BLOCK_M - 1) // BLOCK_M)
+            * ((K + BLOCK_N - 1) // BLOCK_N)
+        )
 
+        cum_group_programs = t.cat([
+            t.zeros(1, dtype=t.long, device=current_buffer.device),
+            programs_per_group.cumsum(dim=0),
+        ])
 
+        groups_arranged = t.arange(
+            orig_mmtm_matrices_metadata.shape[0], dtype=t.long, device=current_buffer.device
+        )
+        pid_to_group = t.repeat_interleave(
+            groups_arranged,
+            repeats=programs_per_group,
+        )
 
-    #unpack and untranspose
+        num_workers = pid_to_group.numel()
+        grid = (num_workers,)
+
+        yb_dimensions = buffer_dimensions
+        yb_lengths_cumsum = buffer_lengths_cumsum  # X, Y and Z share shapes and offsets
+
+        ns_a_x_kernel[grid](
+            A,
+            current_buffer,
+            Y,
+
+            pid_to_group,
+            A_lengths_cumsum,
+            cum_group_programs,
+            A_group_dims,
+            yb_lengths_cumsum,
+            yb_dimensions,
+
+            BLOCK_M,
+            BLOCK_N,
+            BLOCK_K,
+        )
+
+        ns_a_y_kernel[grid](
+            A,
+            Y,
+            Z,
+
+            pid_to_group,
+            A_lengths_cumsum,
+            cum_group_programs,
+            A_group_dims,
+            yb_lengths_cumsum,
+            yb_dimensions,
+
+            BLOCK_M,
+            BLOCK_N,
+            BLOCK_K,
+        )
+
+        BLOCK_SIZE = 512  # may need tuning and benchmarking
+        end_length = current_buffer.numel()  # value, not a scalar tensor pointer
+        grid = (triton.cdiv(end_length, BLOCK_SIZE),)
+
+        ns_x_resolve_kernel[grid](
+            current_buffer,
+            Y,
+            Z,
+
+            a,
+            b,
+            c,
+            end_length,
+
+            BLOCK_SIZE,
+        )
+
+    # put tall matrices back into their original row-major layout
+    start = 0
+    for r, c in original_shapes:
+        end = start + r * c
+        if r > c and r * c:
+            matrix = current_buffer[start:end].view(c, r)
+            current_buffer[start:end].copy_(matrix.t().contiguous().view(-1))
+        start = end
+
+    return current_buffer
+
 
 
 
