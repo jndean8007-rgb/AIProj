@@ -3,6 +3,8 @@ import triton
 import triton.language as tl
 import math
 from jaxtyping import Shaped
+from torch import device
+
 from muon.frobenius_norm import frobenius_norm_partial_sum_kernal, frobenius_norm_normalize_kernal
 from torch_llm.kernals.muon.iterative_approx import ns_x_xtrans_kernel
 
@@ -171,7 +173,6 @@ def muon_ns_kernal_wrapper(
         num_workers = t.sum(programs_per_group, dim=0)
         grid = (num_workers,)
 
-
         groups_arranged = t.arange(A.shape[0], dtype=t.long, device=current_buffer.device)
 
         pid_to_group = t.repeat_interleave(
@@ -179,15 +180,26 @@ def muon_ns_kernal_wrapper(
             repeats=programs_per_group,
         )
 
-        group_dims = t.tensor(
+        A_group_dims = t.tensor(
             [group.shape[0] * group.shape[0] for group in A],
             device=current_buffer.device,
             dtype=t.long,
         )
 
-        lengths_cumsum = t.cat([
+        A_lengths_cumsum = t.cat([
             t.zeros(1, device=current_buffer.device, dtype=t.long),
-            group_dims.cumsum(dim=0),
+            A_group_dims.cumsum(dim=0),
+        ])
+
+        buffer_dimensions = t.tensor(
+            [dim for x in current_buffer for dim in x.shape[:2]],
+            device=current_buffer.device,
+            dtype=t.long,
+        )
+
+        buffer_lengths_cumsum = t.cat([
+            t.zeros(1, device=current_buffer.device, dtype=t.long),
+            buffer_dimensions.cumsum(dim=0),
         ])
 
         ns_x_xtrans_kernel[grid](
@@ -195,21 +207,18 @@ def muon_ns_kernal_wrapper(
             current_buffer,
 
             pid_to_group,
-            lengths_cumsum,
+            A_lengths_cumsum,
             cum_group_programs,
-            group_dims,
+            A_group_dims,
+            buffer_lengths_cumsum,
+            buffer_dimensions,
 
             BLOCK_M,
             BLOCK_N,
             BLOCK_K,
         )
 
-
-
-
-
-
-
+        #put through ns a y kernel, ns a z kernel, simple final add kernel
 
 
 

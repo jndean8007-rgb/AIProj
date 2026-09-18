@@ -25,7 +25,7 @@ def frobenius_norm_partial_sum_kernal(
     base_launch = tl.load(launches_per_mmtm_mat_ptr + matnum)
     mat_launch = pid - base_launch
 
-    for BLOCK_START in tl.range(0, len(ELEMENTS_PER_WORKER), BLOCK_SIZE):
+    for BLOCK_START in tl.range(0, ELEMENTS_PER_WORKER, BLOCK_SIZE):
         block_offsets = prev_length + mat_launch * ELEMENTS_PER_WORKER + tl.arange(0, BLOCK_START)
         block_mask = block_offsets <= end_length
 
@@ -65,7 +65,7 @@ def frobenius_norm_normalize_kernal(
     base_launch = tl.load(launches_per_mmtm_mat_ptr + matnum)
     mat_launch = pid - base_launch
 
-    for BLOCK_START in tl.range(0, len(ELEMENTS_PER_WORKER), BLOCK_SIZE):
+    for BLOCK_START in tl.range(0, ELEMENTS_PER_WORKER, BLOCK_SIZE):
         block_offsets = prev_length + mat_launch * ELEMENTS_PER_WORKER + tl.arange(0, BLOCK_START)
         block_mask = block_offsets <= end_length
 
