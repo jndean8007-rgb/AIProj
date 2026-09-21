@@ -1,6 +1,6 @@
 
 
-
+BENCHMARK INDIVIDUAL CHUNKS OF MUON TO SEE WHICH STEP TAKES THE MOST TIME!!!
 
 
 
@@ -9,9 +9,6 @@
 
 
 generation
-→ inference boundary/runtime
-→ cache interface
-→ Muon optimization
 → kernel profiling
 → MoE diagnostics
 → precision audit
