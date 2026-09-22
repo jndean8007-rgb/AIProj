@@ -49,8 +49,8 @@ class DecoderBlock(nn.Module):
             token_positions: Shaped[t.Tensor, 'T'],
             batch_max_seq_len: int,
             mode: Literal['train', 'prefill', 'decode'] = 'train',
-            kv_cache=None,
-            cache_slots=None,
+            paged_kv_cache = None,
+            cache_batch_context = None,
     ):
 
         attn_out = self.attention(
@@ -58,9 +58,9 @@ class DecoderBlock(nn.Module):
             token_positions,
             cu_seqlens,
             batch_max_seq_len,
-            kv_cache=kv_cache,
             mode=mode,
-            cache_slots=cache_slots,
+            paged_kv_cache=paged_kv_cache,
+            cache_batch_context=cache_batch_context,
         )
 
         x = x + attn_out

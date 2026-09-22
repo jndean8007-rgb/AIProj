@@ -36,8 +36,8 @@ class Attention(nn.Module):
                 cu_seqlens,
                 batch_max_seq_len,
                 mode: Literal['train', 'prefill', 'decode'] = 'train',
-                kv_cache=None,
-                cache_slots=None,
+                paged_kv_cache = None,
+                cache_batch_context = None,
                 attention_mask=None,
                 ):
         assert mode in ("train", "prefill", "decode")
@@ -53,7 +53,7 @@ class Attention(nn.Module):
         k_rope = self.rope(k, token_positions)
 
         if mode == 'train':
-            assert kv_cache is None
+            assert paged_kv_cache is None
             attention_output = FlashAttentionFunction.apply(
                 q_rope,
                 k_rope,
@@ -63,8 +63,14 @@ class Attention(nn.Module):
             )
 
         elif mode == 'decode':
-            assert kv_cache is not None
-            kv_cache.append_decode(k_rope, v, cache_slots)
+            assert paged_kv_cache is not None
+            paged_kv_cache.append_kv(
+                cache_batch_context.physical_blocks,
+                cache_batch_context.block_offsets,
+                k_rope,
+                v,
+            )
+            #CHANGE TO PROPER USAGE
             attention_output = decode_attention_wrapper(
                 q_rope,
                 kv_cache.k_cache[cache_slots],
@@ -73,7 +79,7 @@ class Attention(nn.Module):
             )
 
         else:
-            assert kv_cache is not None
+            assert paged_kv_cache is not None
             attention_output = FlashAttentionFunction.apply(
                 q_rope,
                 k_rope,
@@ -82,10 +88,11 @@ class Attention(nn.Module):
                 batch_max_seq_len
             )
 
-            kv_cache.append_prefill(
+            paged_kv_cache.append_kv(
+                cache_batch_context.physical_blocks,
+                cache_batch_context.block_offsets,
                 k_rope,
                 v,
-                cu_seqlens,
             )
 
         attention_output = rearrange(attention_output, 'T h d -> T (h d)')
