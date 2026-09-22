@@ -71,6 +71,13 @@ class Attention(nn.Module):
                 v,
             )
             #CHANGE TO PROPER USAGE
+
+            attention_output = decode_attention_wrapper(
+                q_rope,
+                paged_kv_cache,
+                cache_batch_context
+            )
+
             attention_output = decode_attention_wrapper(
                 q_rope,
                 kv_cache.k_cache[cache_slots],

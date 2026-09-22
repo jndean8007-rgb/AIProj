@@ -5,13 +5,80 @@ import math
 from jaxtyping import Shaped
 
 #need wrapper
-#need to handle individual splits and write partial lse denoms, max local scores, local weight V num
-#writes to scalar, scalar, (D,)
-#3d logical grid, owning 1 batch, 1 head, 1 chunk of kv sequence
+#time to turn attention into new caches
+def decode_attention_wrapper(
+        q,
+        paged_kv_cache,
+        cache_batch_context
+):
+    b, hq, d = q.shape
+    scale = q / math.sqrt(b)
+    #each cache slot + block table + context length helps resolve which tokens are relevant
 
-#pre compiling of kernal???????????
+    #b corresponds to cache slots
+    #tps derived from num splits and context lens
+    #exact location derived from aggregate, including block table
 
-#need to merge splits and write final output
+    k_cache = paged_kv_cache.k
+    v_cache = paged_kv_cache.v
+    hkv = v_cache.shape[-2]
+
+    assert hq % hkv == 0
+
+    cache_slots = cache_batch_context.cache_slots
+    context_lengths = cache_batch_context.context_lengths #already in reduced form, unlike block table
+    block_table = cache_batch_context.block_table[cache_slots]
+
+    BLOCKS_PER_SPLIT = 4 #tuning variable
+
+    BLOCK_SIZE = paged_kv_cache.block_size
+    blocks_per_sequence = (context_lengths + BLOCK_SIZE - 1) // BLOCK_SIZE
+    splits_per_sequence = (blocks_per_sequence + BLOCKS_PER_SPLIT - 1) // BLOCKS_PER_SPLIT
+
+    cum_splits = t.cat([
+        t.zeros(1, dtype=t.long, device=q.device),
+        t.cumsum(splits_per_sequence, dim=0)]
+    )
+
+
+    num_splits = 8
+
+    partial_max = t.empty((b, hq, num_splits), dtype=t.float32, device=q.device)
+    partial_sum = t.empty((b, hq, num_splits), dtype=t.float32, device=q.device)
+    partial_accum = t.empty((b, hq, num_splits, d), dtype=t.float32, device=q.device)
+
+    BLOCK_N = 64
+    HEAD_DIM = triton.next_power_of_2(d)
+    grid = (b, hq, num_splits)
+
+    decode_attention_split_kernal[grid](
+        q,
+        k_cache,
+        v_cache,
+
+        partial_max,
+        partial_sum,
+        partial_accum,
+
+        cache_slots,
+        context_lengths,
+        block_table,
+        cum_splits,
+
+        d,
+        hq,
+        hkv,
+        scale,
+
+        num_splits,
+        BLOCK_N,
+        HEAD_DIM,
+    )
+
+    )
+
+
+
 def decode_attention_wrapper(q: Shaped[t.Tensor, 'b hq d'],
                              k_cache: Shaped[t.Tensor, 'b s hkv d'],
                              v_cache: Shaped[t.Tensor, 'b s hkv d'],
