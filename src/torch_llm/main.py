@@ -21,8 +21,6 @@ def main():
 
 
 
-
-
     train_path = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\tiny_shake\train')
 
     eval_path = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\tiny_shake\eval')

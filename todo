@@ -1,9 +1,5 @@
 
-Propogate properly through the model
-
-
-
-BENCHMARK INDIVIDUAL CHUNKS OF MUON TO SEE WHICH STEP TAKES THE MOST TIME!!!
+do both training and generation to check muon benchmarks and cache
 
 
 

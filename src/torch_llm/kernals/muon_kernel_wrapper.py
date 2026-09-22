@@ -8,6 +8,7 @@ from torch import device
 from kernals.muon.frobenius_norm import frobenius_norm_partial_sum_kernal, frobenius_norm_normalize_kernal
 from torch_llm.kernals.muon.iterative_approx import ns_x_xtrans_kernel, ns_a_x_kernel, ns_a_y_kernel, \
     ns_x_resolve_kernel
+import time
 
 @t.no_grad()
 def muon_ns_kernal_wrapper(
@@ -101,6 +102,11 @@ def muon_ns_kernal_wrapper(
     workers_req = pid_to_mmtm_mat.numel()
     grid = (workers_req,)
 
+    # ------------------ BENCHMARK -------------------
+    t.cuda.synchronize()
+    t1 = time.perf_counter()
+    # ------------------ BENCHMARK -------------------
+
     frobenius_norm_partial_sum_kernal[grid](
         current_buffer,
         partial_sums,
@@ -113,6 +119,14 @@ def muon_ns_kernal_wrapper(
         BLOCK_SIZE,
     )
 
+    # ------------------ BENCHMARK -------------------
+    t.cuda.synchronize()
+    t11 = time.perf_counter()
+    print(f"[frob partial sum kernel] {t11 - t1:.4f}s")
+
+    t.cuda.synchronize()
+    t2 = time.perf_counter()
+    # ------------------ BENCHMARK -------------------
     frobenius_norm_normalize_kernal[grid](
         current_buffer,
         partial_sums,
@@ -125,6 +139,11 @@ def muon_ns_kernal_wrapper(
         ELEMENTS_PER_WORKER,
         BLOCK_SIZE,
     )
+    # ------------------ BENCHMARK -------------------
+    t.cuda.synchronize()
+    t22 = time.perf_counter()
+    print(f"[frob normalize kernel] {t22 - t2:.4f}s")
+    # ------------------ BENCHMARK -------------------
 
     # now current buffer is normalized, entering iteration stage
     a = 3.4445
@@ -141,6 +160,11 @@ def muon_ns_kernal_wrapper(
     )
     Y = t.empty_like(current_buffer)
     Z = t.empty_like(current_buffer)
+
+    # ------------------ BENCHMARK -------------------
+    t.cuda.synchronize()
+    t7 = time.perf_counter()
+    # ------------------ BENCHMARK -------------------
 
     for _ in range(ns_steps):
         # 1st kernal: XXT, output is (M, M)
@@ -181,6 +205,11 @@ def muon_ns_kernal_wrapper(
             x_lengths.cumsum(dim=0),
         ])
 
+        # ------------------ BENCHMARK -------------------
+        t.cuda.synchronize()
+        t3 = time.perf_counter()
+        # ------------------ BENCHMARK -------------------
+
         ns_x_xtrans_kernel[grid](
             A,
             current_buffer,
@@ -196,6 +225,12 @@ def muon_ns_kernal_wrapper(
             BLOCK_N,
             BLOCK_K,
         )
+
+        # ------------------ BENCHMARK -------------------
+        t.cuda.synchronize()
+        t33 = time.perf_counter()
+        print(f"[ns x xtrans kernel] {t33 - t3:.4f}s")
+        # ------------------ BENCHMARK -------------------
 
         # next two kernals output (M, K), so rebuild the pid table
         programs_per_group = (
@@ -222,6 +257,11 @@ def muon_ns_kernal_wrapper(
         yb_dimensions = buffer_dimensions
         yb_lengths_cumsum = buffer_lengths_cumsum  # X, Y and Z share shapes and offsets
 
+        # ------------------ BENCHMARK -------------------
+        t.cuda.synchronize()
+        t4 = time.perf_counter()
+        # ------------------ BENCHMARK -------------------
+
         ns_a_x_kernel[grid](
             A,
             current_buffer,
@@ -238,6 +278,15 @@ def muon_ns_kernal_wrapper(
             BLOCK_N,
             BLOCK_K,
         )
+
+        # ------------------ BENCHMARK -------------------
+        t.cuda.synchronize()
+        t44 = time.perf_counter()
+        print(f"[ns a x kernel] {t44 - t4:.4f}s")
+
+        t.cuda.synchronize()
+        t5 = time.perf_counter()
+        # ------------------ BENCHMARK -------------------
 
         ns_a_y_kernel[grid](
             A,
@@ -256,6 +305,15 @@ def muon_ns_kernal_wrapper(
             BLOCK_K,
         )
 
+        # ------------------ BENCHMARK -------------------
+        t.cuda.synchronize()
+        t55 = time.perf_counter()
+        print(f"[ns a y kernel] {t55 - t5:.4f}s")
+
+        t.cuda.synchronize()
+        t6 = time.perf_counter()
+        # ------------------ BENCHMARK -------------------
+
         BLOCK_SIZE = 512  # may need tuning and benchmarking
         end_length = current_buffer.numel()  # value, not a scalar tensor pointer
         grid = (triton.cdiv(end_length, BLOCK_SIZE),)
@@ -273,7 +331,19 @@ def muon_ns_kernal_wrapper(
             BLOCK_SIZE,
         )
 
-    # put tall matrices back into their original row-major layout
+        # ------------------ BENCHMARK -------------------
+        t.cuda.synchronize()
+        t66 = time.perf_counter()
+        print(f"[ns x resolve kernel] {t66 - t6:.4f}s")
+
+        # ------------------ BENCHMARK -------------------
+
+    # ------------------ BENCHMARK -------------------
+    t.cuda.synchronize()
+    t77 = time.perf_counter()
+    print(f"[ns_steps all iterations] {t77 - t7:.4f}s")
+    # ------------------ BENCHMARK -------------------
+
     start = 0
     for r, c in original_shapes:
         end = start + r * c
