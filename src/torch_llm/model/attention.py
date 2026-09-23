@@ -78,13 +78,6 @@ class Attention(nn.Module):
                 cache_batch_context
             )
 
-            attention_output = decode_attention_wrapper(
-                q_rope,
-                kv_cache.k_cache[cache_slots],
-                kv_cache.v_cache[cache_slots],
-                kv_cache.seq_lens[cache_slots],
-            )
-
         else:
             assert paged_kv_cache is not None
             attention_output = FlashAttentionFunction.apply(

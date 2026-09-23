@@ -1,3 +1,5 @@
+from os import PathLike
+
 from torch_llm.data_pipeline.bpe_tokenizer_config import BPETokenizerConfig
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -46,8 +48,8 @@ class BPETokenizer:
         self.tokenizer.save(path)
 
     @classmethod
-    def load(cls, path, config):
-        return cls(Tokenizer.from_file(path), config)
+    def load(cls, path: str | PathLike, config):
+        return cls(Tokenizer.from_file(str(path)), config)
 
     @property
     def eos_token_id(self):

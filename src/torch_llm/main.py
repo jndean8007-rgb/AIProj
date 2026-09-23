@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from inference.kvcache_config import KVCacheConfig
 from torch_llm.data_pipeline.bpe_tokenizer_config import BPETokenizerConfig
 from torch_llm.inference.output_handler import OutputHandler
 from torch_llm.inference.batching import PrefillBatch
@@ -21,7 +22,7 @@ def main():
 
     path_config = PathConfig()
 
-    model_config = ModelConfig()
+    '''model_config = ModelConfig()
     train_config = TrainConfig()
     tokenizer_config = BPETokenizerConfig()
 
@@ -38,38 +39,38 @@ def main():
         config_load_path=path_config.config_load_path,
         model_load_path=path_config.model_load_path,
         tokenizer_load_path=path_config.tokenizer_load_path,
+    )'''
+
+
+    model_config = ModelConfig()
+    tokenizer_config = BPETokenizerConfig()
+    kvcache_config = KVCacheConfig()
+
+    model, tokenizer = generate_setup(
+        model_path=path_config.model_load_path,
+        model_config=model_config,
+        tokenizer_path=path_config.tokenizer_load_path,
+        tokenizer_config=tokenizer_config,
+        device="cuda",
+        dtype=t.float32,
     )
 
+    runtime = InferenceRuntime(
+        model=model,
+        model_config=model_config,
+        tokenizer=tokenizer,
+        kvcache_config=kvcache_config,
+    )
 
-model_config = ModelConfig()
-tokenizer_config = BPETokenizerConfig()
-tokenizer_load_path = r"C:\Users\rosie\PycharmProjects\AIProj\checkpoints\tinyshake\BPETokenizer"
-model_load_path = r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\500.pth"
+    output_handler = OutputHandler()
 
-'''model, tokenizer = generate_setup(
-    model_path=model_load_path,
-    model_config=model_config,
-    tokenizer_path=tokenizer_load_path,
-    tokenizer_config=tokenizer_config,
-    device="cuda",
-    dtype=t.float32,
-)
+    inference_processor = InferenceInputProcessor(tokenizer)
 
-runtime = InferenceRuntime(
-    model=model,
-    model_config=model_config,
-    tokenizer=tokenizer,
-)
+    prompts = list(input("Prompt: ")) # will make actual batches later as per intended purpose
 
-output_handler = OutputHandler()
+    prefill_batch = inference_processor.prepare(prompts=prompts)
 
-inference_processor = InferenceInputProcessor(tokenizer)
-
-prompts = list(input("Prompt: ")) # will make actual batches later as per intended purpose
-
-prefill_batch = inference_processor.prepare(prompts=prompts)
-
-runtime.generate(prefill_batch, output_handler)'''
+    runtime.generate(prefill_batch, output_handler)
 
 
 if __name__ == '__main__':

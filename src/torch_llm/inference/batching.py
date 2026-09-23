@@ -137,11 +137,9 @@ def build_prefill_batch(
 ) -> PrefillBatch:
     device = token_sequences[0].device
 
-    token_ids = t.cat([
-        seq for seq in token_sequences
-    ])
+    lengths = [len(seq) for seq in token_sequences]
 
-    lengths = [len(seq) for seq in token_ids]
+    token_ids = t.cat(token_sequences)
 
     cu_seqlens = t.cat([
         t.zeros(1, dtype=t.int32, device=device),

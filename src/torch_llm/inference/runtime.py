@@ -27,7 +27,7 @@ class InferenceRuntime:
         self.cache_manager, self.paged_kv_caches = initialize_cache(
             kvcache_config=self.kvcache_config,
             model_config=self.model_config,
-            device=self.model.device,
+            device=next(self.model.parameters()).device,
         )
 
         self.next_request_id = 0
@@ -279,7 +279,7 @@ def reserve_batch_capacity(
     required_seq_lens = (
         cache_manager.seq_lens[active_cache_slots]
         + sequence_lengths
-    )
+    ) # put device on cuda pre interfacing within main runtime
 
     slots = active_cache_slots.tolist()
     required_seq_lens = required_seq_lens.tolist()

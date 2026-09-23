@@ -33,8 +33,8 @@ def initialize_cache(
             model_config.num_kv_heads,
             model_config.head_dim,
             device,
-            dtype = model_config.dtype,
-        ) for _ in model_config.num_layers
+            dtype = kvcache_config.kv_cache_dtype,
+        ) for _ in range(model_config.num_layers)
     ]
 
     return cache_manager, paged_kv_caches

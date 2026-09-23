@@ -120,8 +120,8 @@ def decode_attention_split_kernal(
         BLOCK_SIZE: tl.constexpr,
         BLOCKS_PER_SPLIT: tl.constexpr,
         BLOCK_TABLE_WIDTH: tl.constexpr,
-        BLOCK_N: tl.contsexpr,
-        HEAD_DIM: tl.contsexpr,
+        BLOCK_N: tl.constexpr,
+        HEAD_DIM: tl.constexpr,
 ):
     batch_id = tl.program_id(0)
     query_head_id = tl.program_id(1)

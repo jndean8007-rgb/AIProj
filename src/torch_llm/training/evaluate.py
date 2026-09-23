@@ -24,7 +24,8 @@ def evaluate(
                 token_positions=batch.token_positions,
                 batch_max_seq_len=batch.batch_max_seq_len,
                 mode="train",
-                kv_caches=None
+                paged_kv_caches=None,
+                cache_batch_context=None
             ).logits.float(), batch.targets).item()
 
     model.train()
