@@ -7,4 +7,4 @@ def sample(
 
     indices = t.argmax(logits, dim=-1)
 
-    return tokenizer.decode(list(indices))
+    return indices  #tokenizer.decode()

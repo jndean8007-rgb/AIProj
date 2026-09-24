@@ -102,6 +102,29 @@ class KVCacheManager:
 
         return slot
 
+    def reserve_capacity(self, slot, required_seq_len):
+        assert slot not in self.free_slots
+        assert required_seq_len <= self.max_seq_len
+
+        required_blocks = (required_seq_len + self.block_size - 1) // self.block_size
+        new_blocks_required = required_blocks - self.slot_num_blocks[slot]
+
+        if new_blocks_required > 0:
+            assert len(self.free_blocks) >= new_blocks_required
+
+            allocated_blocks = [
+                self.free_blocks.pop()
+                for _ in range(new_blocks_required)
+            ]
+
+            self.block_table[slot, self.slot_num_blocks[slot]:required_blocks] = t.tensor(
+                allocated_blocks,
+                dtype=self.block_table.dtype,
+                device=self.block_table.device,
+            )
+
+            self.slot_num_blocks[slot] = required_blocks
+    '''
     def reserve_capacity(self, request_id, num_tokens):
         assert request_id in self.request_to_slot
         slot = self.request_to_slot[request_id]
@@ -127,7 +150,7 @@ class KVCacheManager:
                 device=self.block_table.device,
             )
 
-            self.slot_num_blocks[slot] = required_blocks
+            self.slot_num_blocks[slot] = required_blocks'''
 
     def advance(self, request_id, num_tokens):
         assert request_id in self.request_to_slot

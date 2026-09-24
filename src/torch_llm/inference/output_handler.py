@@ -1,10 +1,11 @@
 
 class OutputHandler:
-    def __init__(self, ): #something wil be ehre later
+    def __init__(self, tokenizer): #something wil be ehre later
+        self.tokenizer = tokenizer
         pass # later will be more complicated and require configs, metadata, etc
 
     def handle_output(self, batch, active_stream_indices):
         # simple initially
         for new_token, active_stream in zip(batch.token_ids, active_stream_indices):
-            print(f"Stream {active_stream} -> {new_token}")
+            print(f"Stream {active_stream} -> {self.tokenizer.decode(new_token.tolist())}")
 

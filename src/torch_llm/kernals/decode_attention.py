@@ -141,28 +141,34 @@ def decode_attention_split_kernal(
 
     block_pos = BLOCK_TABLE_WIDTH * cache_slot + split_id * BLOCKS_PER_SPLIT
 
-    blocks = tl.load(
+    '''blocks = tl.load(
         block_table_ptr + block_pos
-    )
+    )'''
 
     kv_head_id = query_head_id // qh_p_kv
 
     head_offsets = tl.arange(0, HEAD_DIM)
     head_mask = head_offsets < d
 
-    q_pos = (batch_id * hq + query_head_id) * d
+    q_pos = (batch_id * hq + query_head_id) * d + head_offsets
     q_tile = tl.load(q_ptr + q_pos, mask=head_mask, other=0.0)
 
     partial_max = tl.cast(-float("inf"), tl.float32)
     partial_sum = tl.cast(0.0, tl.float32)
     partial_accum = tl.zeros((HEAD_DIM,), dtype=tl.float32)
 
-    for kv_block_portion in tl.range(local_split_start * BLOCK_SIZE, local_split_end * BLOCK_SIZE, BLOCK_N):
+    for kv_block_portion in tl.range(local_split_start * BLOCK_SIZE, BLOCKS_PER_SPLIT * local_split_start * BLOCK_SIZE, BLOCK_N):
         local_block_id = kv_block_portion // BLOCK_SIZE
         kv_block_mod = kv_block_portion % BLOCK_SIZE
         kv_offsets = kv_block_mod + tl.arange(0, BLOCK_N)
         kv_mask = kv_offsets < BLOCK_SIZE
-        block = blocks[local_block_id]
+        #block = blocks[local_block_id]
+
+        block = tl.load(
+            block_table_ptr
+            + block_pos
+            + local_block_id
+        )
 
         remaining = tl.min(BLOCK_SIZE, context_len - local_block_id * BLOCK_SIZE)
         context_mask = kv_offsets < remaining

@@ -40,8 +40,8 @@ class RoPE(t.nn.Module):
     ) -> Shaped[t.Tensor, 't num_heads head_dim']:
 
         #resolve token positions to correctly retrieve trig tables
-        cos = self.cos_table[token_pos].unsqueeze(-2)
-        sin = self.sin_table[token_pos].unsqueeze(-2)
+        cos = self.cos_table[token_pos].unsqueeze(-2).to(x.dtype)
+        sin = self.sin_table[token_pos].unsqueeze(-2).to(x.dtype)
 
         x_first = x[..., 0::2]
         x_second = x[..., 1::2]

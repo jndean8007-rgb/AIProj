@@ -89,3 +89,7 @@ class TransformerLM(nn.Module):
             moe_stats=moe_stats,
             aux_loss=aux_loss
         )
+
+    @property
+    def device(self):
+        return next(self.parameters()).device

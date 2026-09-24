@@ -52,7 +52,7 @@ def main():
         tokenizer_path=path_config.tokenizer_load_path,
         tokenizer_config=tokenizer_config,
         device="cuda",
-        dtype=t.float32,
+        dtype=t.bfloat16,
     )
 
     runtime = InferenceRuntime(
@@ -62,7 +62,7 @@ def main():
         kvcache_config=kvcache_config,
     )
 
-    output_handler = OutputHandler()
+    output_handler = OutputHandler(tokenizer)
 
     inference_processor = InferenceInputProcessor(tokenizer)
 
