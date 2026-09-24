@@ -1,7 +1,9 @@
 import torch as t
 
 from inference.cache_manager import initialize_cache, CacheContainer
+from inference.continuous_batch_scheduler import ContinuousBatchScheduler
 from inference.kvcache_config import KVCacheConfig
+from inference.request_state import RequestState
 from torch_llm.data_pipeline.bpe_tokenizer import BPETokenizer
 from torch_llm.inference.batching import PrefillBatch, build_decode_batch, DecodeBatch
 from torch_llm.inference.output_handler import OutputHandler
@@ -36,6 +38,7 @@ class InferenceRuntime:
         self,
         prefill_batch: PrefillBatch,
         output_handler: OutputHandler,
+        continuous_batch_scheduler: ContinuousBatchScheduler,
         max_new_tokens=100,
     ):
         prefill_batch = prefill_batch.to(self.model.device, non_blocking=True)
@@ -236,6 +239,26 @@ class InferenceRuntime:
         )
 
         return next_batch, active_mask
+
+    def submit(self, prompt, max_new_tokens, continuous_batch_scheduler):
+        request_id = self.next_request_id
+        self.next_request_id += 1
+
+        prompt_tokens = self.tokenizer.encode(prompt)
+
+        request = RequestState(
+            request_id=request_id,
+            prompt_tokens=prompt_tokens,
+            generated_tokens=[],
+            cache_slot=None,
+            next_token=None,
+            next_position=None,
+            max_new_tokens=max_new_tokens,
+            finished=False,
+        )
+
+        continuous_batch_scheduler.submit(request)
+
 
 def cache_location_context(
     active_cache_slots,

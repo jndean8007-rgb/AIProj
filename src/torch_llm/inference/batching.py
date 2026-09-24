@@ -2,6 +2,7 @@
 
 from torch_llm.data_pipeline.bpe_tokenizer import BPETokenizer
 from dataclasses import dataclass
+from inference.request_state import RequestState
 
 import torch as t
 
@@ -138,15 +139,18 @@ def batch_tokenize_prompts(
     ]
 
 
-
 def build_prefill_batch(
-        token_sequences: list[t.Tensor],
+        requests: list[RequestState],
+        device,
 ) -> PrefillBatch:
-    device = token_sequences[0].device
 
-    lengths = [len(seq) for seq in token_sequences]
+    lengths = [len(request.prompt_tokens) for request in requests]
 
-    token_ids = t.cat(token_sequences)
+    token_ids = t.cat(
+        [t.tensor(request) for request in requests],
+        device=device,
+        dtype=t.int32,
+    )
 
     cu_seqlens = t.cat([
         t.zeros(1, dtype=t.int32, device=device),
@@ -166,6 +170,7 @@ def build_prefill_batch(
         token_positions=token_positions,
         batch_max_seq_len=batch_max_seq_len,
     )
+
 
 
 
