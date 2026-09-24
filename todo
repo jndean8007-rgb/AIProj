@@ -1,19 +1,28 @@
 
-do both training and generation to check muon benchmarks and cache
+get cache working
+continuous batching
 
 
+InferenceRuntime
+├── model
+├── tokenizer
+├── output handling
+├── KVCacheManager
+├── PagedKVCaches
+├── ContinuousBatchScheduler
+└── coordinates model forwards
 
+ContinuousBatchScheduler
+├── waiting_requests
+├── active_requests
+└── scheduling policy
+    "who runs next?"
 
+RequestState
+└── state of one request
 
-
-
-generation
-→ kernel profiling
-→ MoE diagnostics
-→ precision audit
-→ then paged KV / continuous batching
-
-
+batching.py
+└── converts selected RequestStates → Prefill/DecodeBatch
 
 
 

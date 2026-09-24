@@ -13,6 +13,13 @@ class DecodeBatch:
     cu_seqlens: t.Tensor
     token_positions: t.Tensor
     batch_max_seq_len: int
+    def to(self, device, non_blocking=False):
+        return type(self)(
+            token_ids=self.token_ids.to(device, non_blocking=non_blocking),
+            cu_seqlens=self.cu_seqlens.to(device, non_blocking=non_blocking),
+            token_positions=self.token_positions.to(device, non_blocking=non_blocking),
+            batch_max_seq_len=self.batch_max_seq_len,
+        )
 
 
 def build_decode_batch(
@@ -168,3 +175,10 @@ class PrefillBatch:
     cu_seqlens: t.Tensor
     token_positions: t.Tensor
     batch_max_seq_len: int
+    def to(self, device, non_blocking=False):
+        return type(self)(
+            token_ids=self.token_ids.to(device, non_blocking=non_blocking),
+            cu_seqlens=self.cu_seqlens.to(device, non_blocking=non_blocking),
+            token_positions=self.token_positions.to(device, non_blocking=non_blocking),
+            batch_max_seq_len=self.batch_max_seq_len,
+        )

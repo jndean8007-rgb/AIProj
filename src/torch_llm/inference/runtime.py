@@ -38,6 +38,8 @@ class InferenceRuntime:
         output_handler: OutputHandler,
         max_new_tokens=100,
     ):
+        prefill_batch = prefill_batch.to(self.model.device, non_blocking=True)
+
         batch_size = len(prefill_batch.cu_seqlens) - 1
 
         active_stream_indices = list(range(batch_size))
@@ -97,6 +99,8 @@ class InferenceRuntime:
                 cache_batch_context=cache_context,
                 mode="prefill",
             )
+            if decode_batch is not None:
+                decode_batch = decode_batch.to(self.model.device, non_blocking=True)
 
             # Prefill K/V has now actually been written.
             advance_batch(
@@ -147,6 +151,9 @@ class InferenceRuntime:
                     cache_batch_context=cache_context,
                     mode="decode",
                 )
+
+                if next_decode_batch is not None:
+                    next_decode_batch = next_decode_batch.to(self.model.device, non_blocking = True)
 
                 # The CURRENT decode_batch has just been written to cache.
                 advance_batch(
