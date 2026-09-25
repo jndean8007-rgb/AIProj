@@ -1,39 +1,48 @@
 from collections import OrderedDict
+from itertools import islice
+
+from torch_llm.inference.request_state import RequestState
+
 
 class ContinuousBatchScheduler:
-    def __init__(
-            self,
-            max_requests,
-    ):
-        self.waiting_requests = OrderedDict()
-        self.active_requests = OrderedDict()
+    """FIFO admission queue. Call from the runtime's owning thread."""
 
+    def __init__(self, max_requests: int):
+        if not isinstance(max_requests, int) or isinstance(max_requests, bool) or max_requests <= 0:
+            raise ValueError("max_requests must be a positive integer")
         self.max_requests = max_requests
+        self.waiting_requests: OrderedDict[int, RequestState] = OrderedDict()
+        self.active_requests: OrderedDict[int, RequestState] = OrderedDict()
 
-    def submit(self, request):
+    def submit(self, request: RequestState):
+        if request.request_id in self.waiting_requests or request.request_id in self.active_requests:
+            raise ValueError(f"Duplicate request ID: {request.request_id}")
+        if request.finished or request.generated_tokens:
+            raise ValueError("Only new requests can be submitted")
         self.waiting_requests[request.request_id] = request
 
-    def admission_candidates(self):
+    def admission_candidates(self, limit: int | None = None) -> list[tuple[int, RequestState]]:
         space = self.max_requests - len(self.active_requests)
-        return [(request_id, request) for request_id, request in list(self.waiting_requests.items())[:space]]
+        if limit is not None:
+            if limit < 0:
+                raise ValueError("limit must be nonnegative")
+            space = min(space, limit)
+        return list(islice(self.waiting_requests.items(), space))
 
     def get_active_requests(self):
-        return self.active_requests
+        return self.active_requests.copy()
 
-    def admit_request(self, request_id, cache_slot):
-        assert request_id not in self.active_requests
-        self.active_requests[request_id] = self.waiting_requests.pop(request_id)
+    def admit_request(self, request_id: int) -> RequestState:
+        if len(self.active_requests) >= self.max_requests:
+            raise RuntimeError("The scheduler has no free request slots")
+        request = self.waiting_requests.pop(request_id)
+        self.active_requests[request_id] = request
+        return request
 
-        self.active_requests[request_id].cache_slot = cache_slot
+    def remove(self, request_id: int) -> RequestState:
+        request = self.active_requests.pop(request_id)
+        request.finished = True
+        return request
 
-    def remove(self, request_id):
-        self.active_requests.pop(request_id)
-
-    '''def admit_waiting(self):
-        for request, request_id in self.waiting_requests:
-            if len(self.active_requests) < self.max_requests:
-                self.active_requests[request_id] = request
-                self.waiting_requests.pop(request_id)
-            else:
-                return'''
-### request state vs request ids
+    def has_pending_requests(self) -> bool:
+        return bool(self.waiting_requests or self.active_requests)

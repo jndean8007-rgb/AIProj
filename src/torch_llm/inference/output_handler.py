@@ -1,11 +1,22 @@
+from collections.abc import Sequence
+from typing import Protocol
+
+import torch as t
+
+
+class OutputSink(Protocol):
+    def handle_output(self, token_ids: list[int], request_ids: list[int]) -> None: ...
+
 
 class OutputHandler:
-    def __init__(self, tokenizer): #something wil be ehre later
+    """Console token diagnostics; implement OutputSink for application streaming."""
+
+    def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        pass # later will be more complicated and require configs, metadata, etc
 
-    def handle_output(self, batch, active_stream_indices):
-        # simple initially
-        for new_token, active_stream in zip(batch.token_ids, active_stream_indices):
-            print(f"Stream {active_stream} -> {self.tokenizer.decode(new_token.tolist())}")
-
+    def handle_output(self, token_ids: Sequence[int] | t.Tensor, request_ids: Sequence[int]):
+        if isinstance(token_ids, t.Tensor):
+            token_ids = token_ids.tolist()
+        for token, request_id in zip(token_ids, request_ids, strict=True):
+            #print(f"Stream {request_id} -> {self.tokenizer.decode([token])}")
+            print(self.tokenizer.decode([token]), end='')

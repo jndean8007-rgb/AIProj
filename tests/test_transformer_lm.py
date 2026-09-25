@@ -1,234 +1,119 @@
+import pytest
 import torch as t
 
-from torch_llm.model.model_config import ModelConfig
+from torch_llm.inference.batching import build_prefill_batch
+from torch_llm.inference.cache_manager import initialize_cache
+from torch_llm.inference.kvcache_config import KVCacheConfig
+from torch_llm.inference.request_state import RequestState
+from torch_llm.inference.runtime import InferenceRuntime
 from torch_llm.model.model import TransformerLM
-from torch_llm.inference.kv_cache import KVCache
+from torch_llm.model.model_config import ModelConfig
 
 
-def make_layer_caches(
-    config,
-    batch_size,
-    device,
-    dtype,
-):
-    """
-    One independent KV cache for every decoder layer.
-    """
-
-    return [
-        KVCache(
-            batch_size=batch_size,
-            cache_max_seq_len=config.model_max_seq_len,
-            num_kv_heads=config.num_kv_heads,
-            head_dim=config.head_dim,
-            device=device,
-            dtype=dtype,
-        )
-        for _ in range(config.num_layers)
-    ]
+def small_config():
+    return ModelConfig(
+        vocab_size=64, d_model=64, num_layers=2, num_q_heads=4,
+        num_kv_heads=2, head_dim=16, d_ff=128, num_experts=4,
+        top_k=2, model_max_seq_len=32, rms_eps=1e-6,
+    )
 
 
-@t.no_grad()
-def test_transformer_prefill_decode_matches_full_forward():
+@pytest.mark.skipif(not t.cuda.is_available(), reason="Model kernels require CUDA")
+@pytest.mark.parametrize("dtype", [t.float16, t.bfloat16])
+@t.inference_mode()
+def test_transformer_prefill_decode_matches_full_forward(dtype):
     t.manual_seed(0)
-
-    device = "cuda"
-    dtype = t.float16
-
-    # -------------------------------------------------
-    # Small deterministic model
-    # -------------------------------------------------
-
-    config = ModelConfig(
-        vocab_size=256,
-
-        d_model=64,
-        num_layers=2,
-
-        num_q_heads=4,
-        num_kv_heads=2,
-        head_dim=16,
-
-        d_ff=128,
-        num_experts=4,
-        top_k=2,
-
-        model_max_seq_len=32,
-
-        rms_eps=1e-6,
-        rope_theta=10000.0,
-
-        router_beta=0.9,
-        router_bias_lr=0.01,
-    )
-
-    model = TransformerLM(config).to(
-        device=device,
-        dtype=dtype,
-    )
-
-    model.eval()
-
-    # -------------------------------------------------
-    # One sequence of length 7
-    #
-    # Full path:
-    #     [0 1 2 3 4 5 6]
-    #
-    # Cached path:
-    #     prefill [0 1 2 3]
-    #     decode  [4]
-    #     decode  [5]
-    #     decode  [6]
-    # -------------------------------------------------
-
-    tokens = t.tensor(
-        [17, 42, 8, 91, 33, 7, 124],
-        device=device,
-        dtype=t.long,
-    )
-
-    seq_len = tokens.numel()
-
-    # =================================================
-    # PATH A:
-    # full causal computation
-    # =================================================
-
-    full_cu_seqlens = t.tensor(
-        [0, seq_len],
-        device=device,
-        dtype=t.int32,
-    )
-
-    full_positions = t.arange(
-        seq_len,
-        device=device,
-        dtype=t.int32,
-    )
-
-    full_out = model(
-        tokens,
-        cu_seqlens=full_cu_seqlens,
-        batch_max_seq_len=seq_len,
-        token_positions=full_positions,
-        mode="train",
-        kv_caches=None,
-    )
-
-    logits_full = full_out.logits.detach()
-
-    assert logits_full.shape == (
-        seq_len,
-        config.vocab_size,
-    )
-
-    # =================================================
-    # PATH B:
-    # prefill + iterative decode
-    # =================================================
-
-    kv_caches = make_layer_caches(
-        config=config,
-        batch_size=1,
-        device=device,
-        dtype=dtype,
-    )
-
-    # -------------------------
-    # Prefill first four tokens
-    # -------------------------
-
-    prefill_len = 4
-
-    prefill_tokens = tokens[:prefill_len]
-
-    prefill_cu_seqlens = t.tensor(
-        [0, prefill_len],
-        device=device,
-        dtype=t.int32,
-    )
-
-    prefill_positions = t.arange(
-        prefill_len,
-        device=device,
-        dtype=t.int32,
-    )
-
+    config = small_config()
+    model = TransformerLM(config).to(device="cuda", dtype=dtype).eval()
+    tokens = [[17, 42, 8, 31, 33, 7, 24], [5, 6, 19, 25]]
+    full = build_prefill_batch([RequestState(i, row, 1) for i, row in enumerate(tokens)], "cuda")
+    logits_full = model(
+        full.token_ids, full.cu_seqlens, full.token_positions, full.batch_max_seq_len, mode="train",
+    ).logits
+    manager, caches = initialize_cache(KVCacheConfig(16, 4, 4, 32, dtype), config, "cuda")
+    slots = [manager.allocate_request(i, len(row)) for i, row in enumerate(tokens)]
+    prompt_lengths = [4, 2]
+    prefill = build_prefill_batch([
+        RequestState(i, row[:length], 1) for i, (row, length) in enumerate(zip(tokens, prompt_lengths))
+    ], "cuda")
+    context = manager.create_container(t.tensor(slots, device="cuda"), prefill.cu_seqlens, prefill.token_positions)
     prefill_out = model(
-        prefill_tokens,
-        cu_seqlens=prefill_cu_seqlens,
-        batch_max_seq_len=prefill_len,
-        token_positions=prefill_positions,
-        mode="prefill",
-        kv_caches=kv_caches,
+        prefill.token_ids, prefill.cu_seqlens, prefill.token_positions, prefill.batch_max_seq_len,
+        mode="prefill", paged_kv_caches=caches, cache_batch_context=context,
+    ).logits
+    manager.advance_batch([0, 1], prompt_lengths)
+    cached_rows = [[prefill_out[:4]], [prefill_out[4:]]]
+    for offset in range(3):
+        ids = [i for i, row in enumerate(tokens) if prompt_lengths[i] + offset < len(row)]
+        positions = t.tensor([prompt_lengths[i] + offset for i in ids], device="cuda", dtype=t.int32)
+        inputs = t.tensor([tokens[i][prompt_lengths[i] + offset] for i in ids], device="cuda")
+        cu = t.arange(len(ids) + 1, device="cuda", dtype=t.int32)
+        context = manager.create_container(t.tensor([slots[i] for i in ids], device="cuda"), cu, positions)
+        out = model(inputs, cu, positions, 1, mode="decode", paged_kv_caches=caches, cache_batch_context=context).logits
+        manager.advance_batch(ids, [1] * len(ids))
+        for row, request_id in enumerate(ids):
+            cached_rows[request_id].append(out[row:row + 1])
+    logits_cached = t.cat([t.cat(row) for row in cached_rows])
+    t.testing.assert_close(logits_cached.float(), logits_full.float(), rtol=3e-2, atol=3e-2)
+    manager.clear()
+
+
+@pytest.mark.skipif(not t.cuda.is_available(), reason="Model kernels require CUDA")
+@t.inference_mode()
+def test_runtime_matches_full_recomputation_and_preserves_router_state():
+    class Tokenizer:
+        eos_token_id = None
+
+        def encode(self, text):
+            return list(map(int, text.split()))
+
+    t.manual_seed(2)
+    config = small_config()
+    model = TransformerLM(config).to(device="cuda", dtype=t.float16).eval()
+    saved_state = {name: value.clone() for name, value in model.state_dict().items()}
+    prompts = [[1, 5, 8], [17, 21]]
+    expected = []
+    for prompt in prompts:
+        history = prompt[:]
+        generated = []
+        for _ in range(3):
+            batch = build_prefill_batch([RequestState(0, history, 1)], "cuda")
+            logits = model(batch.token_ids, batch.cu_seqlens, batch.token_positions, len(history), mode="train").logits
+            token = int(logits[-1].argmax())
+            generated.append(token)
+            history.append(token)
+        expected.append(generated)
+    runtime = InferenceRuntime(model, config, Tokenizer(), KVCacheConfig(16, 4, 2, 32, t.float16))
+    for prompt in prompts:
+        runtime.submit(" ".join(map(str, prompt)), 3)
+    results = {r.request_id: r.generated_tokens for r in runtime.generate()}
+    assert results == dict(enumerate(expected))
+    assert not runtime.cache_manager.request_to_slot
+    for name, value in model.state_dict().items():
+        t.testing.assert_close(value, saved_state[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("training_checkpoint", [True, False])
+def test_generation_setup_loads_checkpoint_on_cpu(tmp_path, training_checkpoint):
+    from torch_llm.data_pipeline.bpe_tokenizer import BPETokenizer
+    from torch_llm.data_pipeline.bpe_tokenizer_config import BPETokenizerConfig
+    from torch_llm.inference.generation_setup import generate_setup
+
+    config = small_config()
+    original = TransformerLM(config)
+    tokenizer_config = BPETokenizerConfig(vocab_size=64)
+    tokenizer = BPETokenizer.from_config(tokenizer_config)
+    from tokenizers.trainers import BpeTrainer
+    tokenizer.tokenizer.train_from_iterator(
+        ["small test text"], trainer=BpeTrainer(vocab_size=64, special_tokens=tokenizer_config.special_tokens),
     )
-
-    cached_logits = [
-        prefill_out.logits.detach()
-    ]
-
-    # -------------------------
-    # Decode remaining tokens
-    # -------------------------
-
-    for position in range(prefill_len, seq_len):
-
-        decode_token = tokens[position:position + 1]
-
-        # One active sequence containing one new token.
-        decode_cu_seqlens = t.tensor(
-            [0, 1],
-            device=device,
-            dtype=t.int32,
-        )
-
-        # Crucial:
-        # RoPE position is the GLOBAL sequence position,
-        # not zero just because this call contains one token.
-        decode_position = t.tensor(
-            [position],
-            device=device,
-            dtype=t.int32,
-        )
-
-        decode_out = model(
-            decode_token,
-            cu_seqlens=decode_cu_seqlens,
-            batch_max_seq_len=1,
-            token_positions=decode_position,
-            mode="decode",
-            kv_caches=kv_caches,
-        )
-
-        cached_logits.append(
-            decode_out.logits.detach()
-        )
-
-    logits_cached = t.cat(
-        cached_logits,
-        dim=0,
-    )
-
-    # =================================================
-    # Compare complete sequence
-    # =================================================
-
-    assert logits_cached.shape == logits_full.shape
-
-    max_error = (
-        logits_cached.float()
-        - logits_full.float()
-    ).abs().max()
-
-    print(
-        "maximum full-vs-cached logit error:",
-        max_error.item(),
-    )
-
-    t.testing.assert_close(
-        logits_cached.float(),
-        logits_full.float(),
-        rtol=3e-2,
-        atol=3e-2,
-    )
+    tokenizer_path = tmp_path / "tokenizer.json"
+    tokenizer.save(str(tokenizer_path))
+    model_path = tmp_path / "model.pt"
+    state = original.state_dict()
+    t.save({"model": state, "step": 1} if training_checkpoint else state, model_path)
+    loaded, loaded_tokenizer = generate_setup(model_path, config, tokenizer_path, tokenizer_config, "cpu", t.float32)
+    assert not loaded.training and loaded.device.type == "cpu"
+    for name, value in loaded.state_dict().items():
+        t.testing.assert_close(value, state[name])
+    assert loaded_tokenizer.decode(loaded_tokenizer.encode("small")) == "small"

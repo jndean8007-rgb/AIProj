@@ -6,7 +6,7 @@ class PathConfig:
     train_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\tiny_shake\train')
     eval_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\tiny_shake\eval')
     training_log_path: Path | None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\trainingstats")
-    model_load_path: Path| None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\0.pth")
+    model_load_path: Path| None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\2000.pth")
     tokenizer_load_path: Path | None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\BPETokenizer")
     config_load_path: Path | None = None
 

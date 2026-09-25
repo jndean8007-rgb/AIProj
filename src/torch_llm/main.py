@@ -1,15 +1,9 @@
-from pathlib import Path
-
-from inference.kvcache_config import KVCacheConfig
+from torch_llm.inference.kvcache_config import KVCacheConfig
 from torch_llm.data_pipeline.bpe_tokenizer_config import BPETokenizerConfig
 from torch_llm.inference.output_handler import OutputHandler
-from torch_llm.inference.batching import PrefillBatch
 from torch_llm.inference.generation_setup import generate_setup
-from torch_llm.inference.input_processor import InferenceInputProcessor
 from torch_llm.inference.runtime import InferenceRuntime
 from torch_llm.model.model_config import ModelConfig
-from torch_llm.training.run_training import run_training
-from torch_llm.training.train_config import TrainConfig
 from torch_llm.path_config import PathConfig
 import torch as t
 
@@ -22,7 +16,10 @@ def main():
 
     path_config = PathConfig()
 
-    '''model_config = ModelConfig()
+    '''from torch_llm.training.run_training import run_training
+    from torch_llm.training.train_config import TrainConfig
+
+    model_config = ModelConfig()
     train_config = TrainConfig()
     tokenizer_config = BPETokenizerConfig()
 
@@ -64,13 +61,8 @@ def main():
 
     output_handler = OutputHandler(tokenizer)
 
-    inference_processor = InferenceInputProcessor(tokenizer)
-
-    prompts = list(input("Prompt: ")) # will make actual batches later as per intended purpose
-
-    prefill_batch = inference_processor.prepare(prompts=prompts)
-
-    runtime.generate(prefill_batch, output_handler)
+    runtime.submit(input("Prompt: "), max_new_tokens=100)
+    runtime.generate(output_handler)
 
 
 if __name__ == '__main__':

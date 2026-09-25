@@ -42,7 +42,7 @@ class BPETokenizer:
         return self.tokenizer.encode(text).ids
 
     def decode(self, token_ids: list[int]) -> str:
-        return self.tokenizer.decode([token_ids])
+        return self.tokenizer.decode(token_ids)
 
     def save(self, path):
         self.tokenizer.save(path)
