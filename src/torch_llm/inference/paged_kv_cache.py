@@ -1,5 +1,7 @@
 import torch as t
 
+from kernals.kv_cache.quantized_append import quantize_append_wrapper
+
 
 class PagedKVCache:
     """Per-layer paged storage; allocation and lengths belong to KVCacheManager."""
@@ -24,12 +26,22 @@ class PagedKVCache:
     def append_kv(self, blocks, offsets, ks, vs):
         # Bounds/ownership are resolved once per batch by the manager, not once
         # per layer. These metadata checks do not synchronize CUDA.
+
         expected_shape = (blocks.numel(), *self.k.shape[2:])
+
         if blocks.ndim != 1 or offsets.shape != blocks.shape or ks.shape != expected_shape or vs.shape != expected_shape:
             raise ValueError("K/V and cache locations must describe the same packed tokens")
+
         if blocks.dtype not in (t.int32, t.int64) or offsets.dtype not in (t.int32, t.int64):
             raise ValueError("Cache locations must be integer tensors")
+
         if any(value.device != self.k.device for value in (blocks, offsets, ks, vs)):
             raise ValueError("K/V and cache locations must be on the cache device")
-        self.k[blocks, offsets] = ks.to(dtype=self.k.dtype)
-        self.v[blocks, offsets] = vs.to(dtype=self.v.dtype)
+
+        quantize_append_wrapper(
+            self,
+            ks,
+            vs,
+            blocks,
+            offsets,
+        )
