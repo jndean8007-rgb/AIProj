@@ -1,31 +1,28 @@
+src/torch_llm/
+├── inference/
+│   ├── kvcache_config.py          CHANGE
+│   ├── paged_kv_cache.py          CHANGE
+│   ├── cache_manager.py           NO CHANGE
+│   └── runtime.py                 essentially NO CHANGE
+│
+├── model/
+│   └── attention.py               SMALL CHANGE
+│
+└── kernals/
+    └── attention/
+        └── decode.py              CHANGE
 
-get cache working
-continuous batching
-
-
-InferenceRuntime
-├── model
-├── tokenizer
-├── output handling
-├── KVCacheManager
-├── PagedKVCaches
-├── ContinuousBatchScheduler
-└── coordinates model forwards
-
-ContinuousBatchScheduler
-├── waiting_requests
-├── active_requests
-└── scheduling policy
-    "who runs next?"
-
-RequestState
-└── state of one request
-
-batching.py
-└── converts selected RequestStates → Prefill/DecodeBatch
-
-
-
+1. Extend PagedKVCache storage with scales
+        ↓
+2. Implement quantized append kernel
+        ↓
+3. Verify quantize → dequantize error against BF16
+        ↓
+4. Modify paged decode kernel to load scales/dequantize
+        ↓
+5. End-to-end cached inference test
+        ↓
+6. Benchmark memory + decode throughput
 
 
 

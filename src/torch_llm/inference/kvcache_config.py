@@ -9,7 +9,11 @@ class KVCacheConfig:
     block_size: int = 16
     max_cache_slots: int = 64
     cache_max_seq_len: int = 2048
-    kv_cache_dtype: t.dtype = t.bfloat16
+
+    kv_cache_dtype: t.dtype = t.float8_e4m3fn
+    kv_scale_dtype: t.dtype = t.float32
+    scale_granularity: str = "token_head"
+
 
     def __post_init__(self):
         for name in ("num_blocks", "block_size", "max_cache_slots", "cache_max_seq_len"):

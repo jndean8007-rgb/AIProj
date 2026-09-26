@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class TrainConfig:
-    total_steps: int = 2_000
+    total_steps: int = 15_000
     warmup_steps: int = 100
     min_lr_ratio: float = 0.1
 
@@ -12,7 +12,7 @@ class TrainConfig:
     weight_decay: float = 0.01
 
     log_interval: int = 100
-    checkpoint_dir: str = r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake"
+    checkpoint_dir: str = r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\HuggingFaceFW/fineweb-edu"
     checkpoint_interval: int = 500
     eval_interval: int = 100
 

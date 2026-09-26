@@ -12,6 +12,8 @@ class BPETokenizerConfig:
     eos_token: str = "<eos>"
     pad_token: str = "<pad>"
 
+    max_training_samples: int | None = 10_000 # for streaming tokenizer training
+
     special_tokens: list[str] = field(init=False)
 
     def __post_init__(self):

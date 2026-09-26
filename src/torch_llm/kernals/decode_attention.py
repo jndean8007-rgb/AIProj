@@ -12,6 +12,30 @@ import triton
 import triton.language as tl
 
 
+'''
+logical block
+→ physical block
+→ page offset
+→ K/V vector
+
+
+physical block + offset + kv_head
+        ↓
+load quantized K/V
+load K/V scale
+        ↓
+dequantize
+        ↓
+normal attention math
+
+'''
+
+
+
+
+
+
+
 def decode_attention_wrapper(
     q,
     paged_kv_cache,

@@ -38,6 +38,18 @@ class BPETokenizer:
             trainer=trainer
         )
 
+    def train_from_iterator(self, config: BPETokenizerConfig, text_iterator):
+        trainer = BpeTrainer(
+            vocab_size=config.vocab_size,
+            min_frequency=config.min_frequency,
+            special_tokens=config.special_tokens
+        )
+
+        self.tokenizer.train_from_iterator(
+            text_iterator,
+            trainer=trainer
+        )
+
     def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text).ids
 

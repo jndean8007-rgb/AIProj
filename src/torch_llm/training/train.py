@@ -32,11 +32,9 @@ def train(
     step = start_step
 
     while step < train_config.total_steps:
+        epoch_start_step = step
 
         for batch in train_loader:
-            if step > train_config.total_steps:
-                break
-
             batch = batch.to(
                 device,
                 non_blocking=True
@@ -112,5 +110,10 @@ def train(
                 print("Validation set loss: ", loss)
 
             step += 1
+            if step >= train_config.total_steps:
+                break
+
+        if step == epoch_start_step:
+            raise ValueError("training dataset is empty or exhausted")
 
     return model

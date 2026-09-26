@@ -4,17 +4,21 @@ import torch as t
 class PagedKVCache:
     """Per-layer paged storage; allocation and lengths belong to KVCacheManager."""
 
-    def __init__(self, num_blocks: int, block_size: int, num_kv_heads: int, head_dim: int, device, dtype):
+    def __init__(self, num_blocks: int, block_size: int, num_kv_heads: int, head_dim: int, device, cache_dtype, scale_dtype, scale_granularity):
+
         for value in (num_blocks, block_size, num_kv_heads, head_dim):
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError("Cache dimensions must be positive integers")
-        if dtype not in (t.float16, t.bfloat16, t.float32):
-            raise ValueError("Unsupported KV cache dtype")
+
         self.num_blocks = num_blocks
         self.block_size = block_size
         shape = (num_blocks, block_size, num_kv_heads, head_dim)
-        self.k = t.empty(shape, device=device, dtype=dtype)
+
+        self.k = t.empty(shape, device=device, dtype=cache_dtype)
         self.v = t.empty_like(self.k)
+
+        self.k_scales = t.empty(shape[:3], device=device, dtype=scale_dtype)
+        self.v_scales = t.empty_like(self.k_scales)
 
     @t.no_grad()
     def append_kv(self, blocks, offsets, ks, vs):

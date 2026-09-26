@@ -8,7 +8,19 @@ from torch_llm.inference.kv_cache import KVCache
 from torch_llm.kernals.decode_attention import decode_attention_wrapper
 from typing import Literal
 
+'''
+prefill
+compute current K/V normally in BF16
+→ use them normally for prefill attention
+→ quantized cache append for future use
 
+decode
+compute new K/V
+→ quantized append
+→ paged decode kernel reads quantized history + scales
+
+
+'''
 class Attention(nn.Module):
     def __init__(self,
                  d_model,

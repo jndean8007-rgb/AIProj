@@ -1,3 +1,6 @@
+from itertools import islice
+from pathlib import Path
+
 from torch_llm.data_pipeline.dataset import TokenSequenceDataset
 from torch_llm.data_pipeline.loader import loader
 from torch_llm.model.model import TransformerLM
@@ -14,6 +17,8 @@ def setup(
         eval_path,
         device='cuda',
         dtype=t.bfloat16,
+        train_dataset=None,
+        eval_dataset=None,
 ):
 
     model = TransformerLM(model_config).to(
@@ -44,14 +49,17 @@ def setup(
     )
 
 
-    train_text = train_path.read_text(encoding="utf-8")
-    eval_text = eval_path.read_text(encoding="utf-8")
-
-    tsd_train = TokenSequenceDataset.from_training_texts(
-        [train_text],
-        tokenizer,
-        model_config.model_max_seq_len
-    )
+    if train_dataset is None:
+        train_text = Path(train_path).read_text(encoding="utf-8")
+        tsd_train = TokenSequenceDataset.from_training_texts(
+            [train_text],
+            tokenizer,
+            model_config.model_max_seq_len
+        )
+    else:
+        train_dataset.tokenizer = tokenizer
+        train_dataset.seq_len = model_config.model_max_seq_len
+        tsd_train = train_dataset
 
     train_loader = loader(
         tsd_train,
@@ -59,11 +67,17 @@ def setup(
         4096
     )
 
-    tsd_eval = TokenSequenceDataset.from_training_texts(
-        [eval_text],
-        tokenizer,
-        model_config.model_max_seq_len
-    )
+    if eval_dataset is None:
+        eval_text = Path(eval_path).read_text(encoding="utf-8")
+        tsd_eval = TokenSequenceDataset.from_training_texts(
+            [eval_text],
+            tokenizer,
+            model_config.model_max_seq_len
+        )
+    else:
+        eval_dataset.tokenizer = tokenizer
+        eval_dataset.seq_len = model_config.model_max_seq_len
+        tsd_eval = eval_dataset
 
     eval_loader = loader(
         tsd_eval,
@@ -88,6 +102,7 @@ def build_or_load_tokenizer(
         tokenizer_config,
         from_checkpoint = False,
         tokenizer_load_path = None,
+        train_dataset = None,
 ):
 
     if from_checkpoint:
@@ -101,9 +116,22 @@ def build_or_load_tokenizer(
             tokenizer_config
         )
 
-        tokenizer.train(
-            tokenizer_config,
-            train_path,
-        )
+        if train_dataset is None:
+            tokenizer.train(
+                tokenizer_config,
+                train_path,
+            )
+        else:
+            if iter(train_dataset.text_iterator) is train_dataset.text_iterator:
+                raise ValueError("tokenizer training requires a re-iterable dataset, not a one-shot iterator")
+
+            # only sample the stream when fitting the tokenizer
+            tokenizer.train_from_iterator(
+                tokenizer_config,
+                islice(
+                    train_dataset.tokenizer_training_iterator(),
+                    tokenizer_config.max_training_samples,
+                ),
+            )
 
     return tokenizer

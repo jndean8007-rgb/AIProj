@@ -3,11 +3,11 @@ from pathlib import Path
 
 @dataclass
 class PathConfig:
-    train_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\tiny_shake\train')
-    eval_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\tiny_shake\eval')
-    training_log_path: Path | None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\trainingstats")
-    model_load_path: Path| None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\2000.pth")
-    tokenizer_load_path: Path | None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\BPETokenizer")
+    train_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\HuggingFaceFW/fineweb-edu\train')
+    eval_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\data\processed\HuggingFaceFW/fineweb-edu\eval')
+    training_log_path: Path | None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\HuggingFaceFW/fineweb-edu\trainingstats")
+    model_load_path: Path| None = Path(r"C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\HuggingFaceFW\fineweb-edu\13000.pth")
+    tokenizer_load_path: Path | None = Path(r'C:\Users\rosie\PycharmProjects\AIBigProject\checkpoints\tinyshake\BPETokenizer')
     config_load_path: Path | None = None
 
     def __post_init__(self):

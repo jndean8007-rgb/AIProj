@@ -120,12 +120,12 @@ def muon_ns_kernal_wrapper(
     )
 
     # ------------------ BENCHMARK -------------------
-    t.cuda.synchronize()
-    t11 = time.perf_counter()
-    print(f"[frob partial sum kernel] {t11 - t1:.4f}s")
+    #t.cuda.synchronize()
+    #t11 = time.perf_counter()
+    #print(f"[frob partial sum kernel] {t11 - t1:.4f}s")
 
-    t.cuda.synchronize()
-    t2 = time.perf_counter()
+    #t.cuda.synchronize()
+    #t2 = time.perf_counter()
     # ------------------ BENCHMARK -------------------
     frobenius_norm_normalize_kernal[grid](
         current_buffer,
@@ -139,11 +139,11 @@ def muon_ns_kernal_wrapper(
         ELEMENTS_PER_WORKER,
         BLOCK_SIZE,
     )
-    # ------------------ BENCHMARK -------------------
-    t.cuda.synchronize()
-    t22 = time.perf_counter()
-    print(f"[frob normalize kernel] {t22 - t2:.4f}s")
-    # ------------------ BENCHMARK -------------------
+    ## ------------------ BENCHMARK -------------------
+    #t.cuda.synchronize()
+    #t22 = time.perf_counter()
+    #print(f"[frob normalize kernel] {t22 - t2:.4f}s")
+    # ------------------ BENCHMARK -------------------#
 
     # now current buffer is normalized, entering iteration stage
     a = 3.4445
@@ -162,8 +162,8 @@ def muon_ns_kernal_wrapper(
     Z = t.empty_like(current_buffer)
 
     # ------------------ BENCHMARK -------------------
-    t.cuda.synchronize()
-    t7 = time.perf_counter()
+    #t.cuda.synchronize()
+    #t7 = time.perf_counter()
     # ------------------ BENCHMARK -------------------
 
     for _ in range(ns_steps):
@@ -206,8 +206,8 @@ def muon_ns_kernal_wrapper(
         ])
 
         # ------------------ BENCHMARK -------------------
-        t.cuda.synchronize()
-        t3 = time.perf_counter()
+        #t.cuda.synchronize()
+        #t3 = time.perf_counter()
         # ------------------ BENCHMARK -------------------
 
         ns_x_xtrans_kernel[grid](
@@ -226,10 +226,10 @@ def muon_ns_kernal_wrapper(
             BLOCK_K,
         )
 
-        # ------------------ BENCHMARK -------------------
-        t.cuda.synchronize()
-        t33 = time.perf_counter()
-        print(f"[ns x xtrans kernel] {t33 - t3:.4f}s")
+       # ------------------ BENCHMARK -------------------
+        #t.cuda.synchronize()
+        #t33 = time.perf_counter()
+        #print(f"[ns x xtrans kernel] {t33 - t3:.4f}s")
         # ------------------ BENCHMARK -------------------
 
         # next two kernals output (M, K), so rebuild the pid table
@@ -280,12 +280,12 @@ def muon_ns_kernal_wrapper(
         )
 
         # ------------------ BENCHMARK -------------------
-        t.cuda.synchronize()
-        t44 = time.perf_counter()
-        print(f"[ns a x kernel] {t44 - t4:.4f}s")
+        #t.cuda.synchronize()
+        #t44 = time.perf_counter()
+        #print(f"[ns a x kernel] {t44 - t4:.4f}s")
 
-        t.cuda.synchronize()
-        t5 = time.perf_counter()
+        #t.cuda.synchronize()
+        #t5 = time.perf_counter()
         # ------------------ BENCHMARK -------------------
 
         ns_a_y_kernel[grid](
@@ -306,12 +306,12 @@ def muon_ns_kernal_wrapper(
         )
 
         # ------------------ BENCHMARK -------------------
-        t.cuda.synchronize()
-        t55 = time.perf_counter()
-        print(f"[ns a y kernel] {t55 - t5:.4f}s")
+        #t.cuda.synchronize()
+        #t55 = time.perf_counter()
+        #print(f"[ns a y kernel] {t55 - t5:.4f}s")
 
-        t.cuda.synchronize()
-        t6 = time.perf_counter()
+        #t.cuda.synchronize()
+        #t6 = time.perf_counter()
         # ------------------ BENCHMARK -------------------
 
         BLOCK_SIZE = 512  # may need tuning and benchmarking
@@ -332,16 +332,16 @@ def muon_ns_kernal_wrapper(
         )
 
         # ------------------ BENCHMARK -------------------
-        t.cuda.synchronize()
-        t66 = time.perf_counter()
-        print(f"[ns x resolve kernel] {t66 - t6:.4f}s")
+        #t.cuda.synchronize()
+        #t66 = time.perf_counter()
+        #print(f"[ns x resolve kernel] {t66 - t6:.4f}s")
 
         # ------------------ BENCHMARK -------------------
 
     # ------------------ BENCHMARK -------------------
-    t.cuda.synchronize()
-    t77 = time.perf_counter()
-    print(f"[ns_steps all iterations] {t77 - t7:.4f}s")
+    #t.cuda.synchronize()
+    #t77 = time.perf_counter()
+    #print(f"[ns_steps all iterations] {t77 - t7:.4f}s")
     # ------------------ BENCHMARK -------------------
 
     start = 0
