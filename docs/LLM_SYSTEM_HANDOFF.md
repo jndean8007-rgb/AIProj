@@ -12,8 +12,8 @@ Muon) and a working inference runtime (paged KV cache, continuous batching,
 split-K paged decode kernel) as of `930c75a`. Active work (`a2bf43d`, `379a99a`):
 FP8 KV-cache quantization, steps 1–2 of the plan in `todo` begun; the tree is
 mid-change and the inference path is currently broken (see Open questions).
-Roadmap after this: distributed training/inference → speculative decoding →
-expert parallelism → experimental architectures.
+Roadmap: see D9 / `docs/GOAL_ARCHITECTURE.md` §9. Next: Phase 0a (finish D8),
+then Phase 0b (extensibility refactor, D10).
 
 ## Decisions
 
@@ -26,9 +26,9 @@ expert parallelism → experimental architectures.
 | D5 | Paged KV cache: per-layer `PagedKVCache` storage `[num_blocks, block_size, H_kv, D]`; allocation, block tables, and lengths owned by a single `KVCacheManager` (CPU-authoritative, device mirror). Storage validates only; bounds/ownership resolved once per batch by the manager. | Implemented | pre-2026-09-26 | `inference/paged_kv_cache.py`, `inference/cache_manager.py` |
 | D6 | Continuous batching: `submit`/`step`/`generate`, FIFO admission reserving full lifetime cache capacity up front; prefill and decode are distinct batch types. No preemption/eviction/chunked prefill. | Implemented | pre-2026-09-26 | `inference/runtime.py`, `continuous_batch_scheduler.py`, `inference/README.md` |
 | D7 | Decode attention: split-K (flash-decoding) Triton kernel reading paged K/V via the full block table indexed by cache slot. | Implemented | pre-2026-09-26 | `kernals/decode_attention.py` |
-| D8 | KV-cache quantization: FP8 e4m3 storage, FP32 scale per (token, KV head) (`scale_granularity="token_head"`), scales stored `[num_blocks, block_size, H_kv]`. Prefill attends over unquantized K/V; only cache writes are quantized. Decode applies scales inside the paged kernel (K scale on the per-token score, V scale on the per-token probability). | Agreed (in progress) | 2026-09-25 | Plan in `todo`. Storage + append kernel begun: `paged_kv_cache.py`, `kernals/kv_cache/quantized_append.py`. Decode-side not started. See D9, D10. |
-| D9 | Unquantized cache stays supported: `kv_cache_dtype` in {bf16, fp16, fp32} means plain storage with `k_scales`/`v_scales = None`; `float8_e4m3fn` means quantized storage with scales. Append dispatches on this; the decode kernel takes a constexpr `IS_QUANTIZED`. Reason: BF16 is the reference for FP8 error tests, and FP8 casts need sm89+ GPUs. | Agreed | 2026-09-26 | Not implemented. |
-| D10 | `scale_granularity` is kept as a config field but only `"token_head"` is valid; the config rejects anything else. Reason: per-token scales are computed once at write time and never need rewriting as the cache grows. A second mode (e.g. per-channel K scales for INT4) gets added only when it is actually built. | Agreed | 2026-09-26 | Not implemented. |
+| D8 | KV-cache quantization: FP8 e4m3 storage, FP32 scale per (token, KV head) (`scale_granularity="token_head"`), scales stored `[num_blocks, block_size, H_kv]`. Prefill attends over unquantized K/V; only cache writes are quantized. Decode dequantizes inside the paged kernel. | Agreed (in progress) | 2026-09-25 | Plan in `todo`. Storage + append kernel begun: `paged_kv_cache.py`, `kernals/kv_cache/quantized_append.py`. Decode-side dequant not started. |
+| D9 | Goal architecture (G1–G14): KDA/global 3:1 hybrid (global = MLA → DSA → CSA/HCA, gated, NoPE), pluggable residual (Block AttnRes default / mHC), LatentMoE + shared + hash-early, Engram, shared-weight MTP, Muon family, DeviceMesh FSDP2+EP+CP, unified state manager, OpenAI-compatible serving, agent harness + agentic RAG, roadmap Phases 0–8. | Agreed | 2026-09-26 | `docs/GOAL_ARCHITECTURE.md` §5–§9. Supersedes the informal roadmap in `todo`. |
+| D10 | Extensibility contract (G15) + hardware-independent target (G16): code against `SequenceMixer`/`FeedForward`/`Residual`/`TokenMemory`/`OutputHead` protocols; `BatchMeta`; registries + `LayerSpec` config; engine-owned state via `StateSpec` with reserve/commit/truncate/snapshot/restore/free; open `AuxOutputs`; kernel dispatch with references; sharding as policy; versioned configs; generic contract tests. Dev hardware never shapes the architecture. | Agreed | 2026-09-26 | `docs/GOAL_ARCHITECTURE.md` §3–§4. Built in Phase 0b (behavior-preserving refactor). |
 
 ## Open questions
 
@@ -39,4 +39,6 @@ expert parallelism → experimental architectures.
   - Still broken: `paged_kv_cache.py` imports `kernals...` instead of `torch_llm.kernals...`.
   - Still broken: the append kernel now takes `cache_dtype` as a runtime arg. Triton cannot pass a `torch.dtype` at runtime, and `tl.cast` needs a constexpr `tl.dtype`, so the dtype has to be a constexpr (for example, map `torch.float8_e4m3fn` to `tl.float8e4nv`). There is still no clamp to ±finfo.max before the FP8 cast, and contiguous `ks`/`vs` are still assumed.
   - Still broken: tests construct `PagedKVCache(..., dtype)` with the old signature.
+- Should non-FP8 cache dtypes (bf16/fp16) remain supported as an unquantized path (no scales), or is the cache FP8-only from now on?
+- Is `scale_granularity` meant to become a real switch (e.g. per-block/per-head), or fixed at `token_head`?
 - Pre-existing, unrelated: `kernals/muon_kernel_wrapper.py` top-level `kernals` import breaks `test_muon_etc.py`/`test_overfit_tiny.py` collection; `test_norm.py` passes 3D input to a 2D-only RMSNorm.
