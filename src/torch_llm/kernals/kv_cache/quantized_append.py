@@ -84,7 +84,8 @@ def quantize_append(
         block_offsets_ptr,
         head_dim,
         num_kv_heads,
-        cache_dtype,
+
+        CACHE_DTYPE: tl.constexpr,  #idek at this point
 
         MAX_REP_CACHE_DTYPE: tl.constexpr,
         BLOCK_D: tl.constexpr,

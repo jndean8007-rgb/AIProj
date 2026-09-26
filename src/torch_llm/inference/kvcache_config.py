@@ -12,4 +12,4 @@ class KVCacheConfig:
 
     kv_cache_dtype: t.dtype = t.float8_e4m3fn
     kv_scale_dtype: t.dtype = t.float32
-    scale_granularity: str | None = None
+    scale_granularity: str = "token_head"
