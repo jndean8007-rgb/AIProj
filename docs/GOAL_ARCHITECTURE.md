@@ -1,50 +1,67 @@
-# Goal Architecture Proposal
+# Goal Architecture Proposal (v2)
 
-**Status: Proposed** (2026-09-26). Nothing here is agreed yet. When you accept an item (by its `G#` ID in §7), it moves into `docs/LLM_SYSTEM_HANDOFF.md` as **Agreed**. Everything below is Claude's recommendation. Where there's a real alternative, the doc names it and says what it would cost.
+**Status: Proposed** (v2, 2026-09-26). Nothing here is agreed yet. When you accept an item (by its `G#` ID in §9), it moves into `docs/LLM_SYSTEM_HANDOFF.md` as **Agreed**.
+
+**What changed from v1.** v1 was DeepSeek-only. v2 was checked against every major open frontier architecture released through September 2026 (§2). It adds:
+- linear-attention hybrid layers (GDN → KDA)
+- gated attention
+- a choice of residual design (Block AttnRes or mHC)
+- LatentMoE
+- Engram/n-gram memory, promoted from experimental to core
+- shared-weight MTP
+- NoPE on global layers
+- modern RL (DAPO/GSPO) and a full agent harness
+- **multi-GPU scaling designed in from the start** (§5.2)
 
 ---
 
 ## 0. The short version
 
-The target is a **DeepSeek-V4-style long-context MoE model** served by **our own inference engine** behind an **OpenAI-compatible API**, with a **tool-use and RAG agent layer** on top, packaged for deployment on a single cloud GPU.
+The target is a **hybrid linear/global-attention MoE model**, served by **our own inference engine** behind an **OpenAI-compatible API**, with a modern **agent harness** on top: tools, agentic RAG, context management and sandboxed code execution. The same code runs on one local GPU or on rented multi-GPU nodes.
 
-The model follows DeepSeek's own lineage, and each step builds on the previous one:
+**Repeating layer unit (3:1):**
 
 ```
-GQA (today) ──► MLA (latent KV) ──► DSA (lightning indexer + top-k sparse)
-            ──► CSA / HCA hybrid (sequence-compressed KV + sliding window + sink)
-            ──► CSA2-style cross-layer index reuse and FP4 KV (DeepSeek-V4.1-Flash, Sept 2026)
+[ KDA ]──[ KDA ]──[ KDA ]──[ Global attention (gated) ]   × N
+   linear, O(1) state          DeepSeek lineage: MLA → DSA → CSA/HCA
 ```
 
-Around that: **mHC** residual streams, **DeepSeekMoE v2** (shared expert, sqrt-softplus scoring, hash-routed early layers), **MTP** heads (which also serve as the speculative-decoding draft), Muon (already implemented), and FP8 and later FP4 precision.
+Around that unit:
+- **LatentMoE** FFNs with a shared expert and hash-routed early layers
+- **Engram** n-gram memory at an early layer
+- **Block Attention Residuals** (with mHC as the ablation)
+- **shared-weight recursive MTP**, which is also the speculative draft
+- NoPE on global layers
+- the **Muon** family of optimizers
+- a precision path from BF16 to FP8 to FP4
 
 ```mermaid
 flowchart TB
-  subgraph Agent["Agent layer"]
-    CT[Chat template<br/>roles · thinking · tool tokens]
-    TU[Tool runtime<br/>registry · MCP client · sandbox]
-    RAG[RAG<br/>ingest · hybrid retrieve · rerank · cite]
+  subgraph Agent["Agent harness"]
+    LOOP[Agent loop · subagents · planning/verification]
+    CTX[Context mgmt: compaction · tool-output offload · skills · memory files]
+    TOOLS[Tools: MCP client · sandboxed code exec · agentic RAG]
   end
   subgraph API["Serving"]
-    OAI[OpenAI-compatible HTTP + SSE<br/>auth · rate limit · metrics]
+    OAI[OpenAI-compatible HTTP + SSE · auth · metrics]
   end
   subgraph Engine["Inference engine"]
-    SCH[Token-budget scheduler<br/>chunked prefill · preemption]
-    HCM[Heterogeneous cache manager<br/>paged pools per CacheSpec · prefix cache · GPU→host→SSD tiers]
-    SPEC[MTP speculative decoding]
-    CD[Constrained decoding<br/>JSON-schema token masks]
-    RUN[Model runner<br/>CUDA graphs · quantized weights]
+    SCH[Token-budget scheduler · chunked prefill · preemption]
+    HCM[Unified state manager: paged KV kinds + recurrent states + Engram tables<br/>prefix cache w/ state snapshots · GPU→host→SSD]
+    SPEC[MTP speculative decoding w/ state rollback]
+    CD[Constrained decoding]
   end
   subgraph Model["Model (per-layer LayerSpec)"]
-    EMB[Embedding → mHC streams ×n]
-    ATT[Attention: MLA / DSA / CSA / HCA + SWA + sink]
-    FFN[MoE v2: shared + routed experts, hash-routed early layers]
-    MTP[MTP module]
+    LIN[KDA linear attention ×3]
+    GLB[Gated global attention ×1: MLA → DSA → CSA/HCA]
+    FFN[LatentMoE + shared expert]
+    MEM[Engram n-gram memory]
+    RES[Block AttnRes / mHC]
   end
-  subgraph Train["Training"]
-    DATA[Streaming sharded data · packing]
-    OPT[Muon + AdamW · FP8 · FSDP2/EP]
-    POST[SFT → tool/RAG data → GRPO]
+  subgraph Train["Training (DeviceMesh: FSDP2 × EP × CP)"]
+    DATA[Resumable sharded data]
+    OPT[Muon-family · FP8/FP4 · reshardable DCP checkpoints]
+    POST[SFT → DAPO/GSPO on verifiable + agentic rewards]
   end
   Agent --> API --> Engine --> Model
   Train --> Model
@@ -56,310 +73,335 @@ flowchart TB
 
 - Packed varlen decoder LM with GQA, RoPE, RMSNorm, and a top-k MoE (softmax router, aux-free bias plus aux loss). Custom Triton flash-attention, grouped SwiGLU MoE kernels, and Muon kernels. (D1–D4)
 - Inference: paged KV cache, a single `KVCacheManager`, continuous batching with FIFO full-lifetime reservation, and a split-K paged decode kernel. (D5–D7)
-- In progress: FP8 KV quantization (D8). The tree is currently broken there, and three tests fail collection.
-- The data pipeline has an HF `tokenizers` byte-level BPE and a streaming dataset. Training targets FineWeb-Edu.
-
-This is a strong base. The engine work in particular (paged cache, ownership split, split-K decode) carries straight into the target.
+- In progress: FP8 KV quantization (D8). The tree is currently broken there.
 
 ---
 
-## 2. Guiding principles
+## 2. Landscape check: where the frontier actually is (September 2026)
 
-1. **Reference first.** Every fused or Triton kernel has a slow PyTorch reference, and a test compares the two. The repo already works this way; the proposal keeps it.
-2. **The layer stack is heterogeneous by design.** V4 interleaves attention types by depth, so each layer's attention, FFN and cache kind are declared in config as a `LayerSpec`. Nothing assumes that all layers are the same.
-3. **The engine/API boundary is the seam.** Everything above the engine (agent, RAG, tools, evals) talks only to the OpenAI-compatible API. It can therefore be built and tested against any backend, including a stronger open model, while our own model is still small.
-4. **Be honest about scale.** On one GPU, the long-context techniques are validated by correctness against dense references plus measured memory and FLOP savings. They are not validated by frontier-quality claims.
-5. **Durable abstractions before fast paths.** The cache manager is designed for compressed and sliding-window kinds now, even though GQA and MLA get implemented first. That avoids a second rewrite later.
+There is no single "most modern architecture". The top labs disagree on attention and on residuals. What *is* shared is a set of consensus trends, and v2 adopts all of them. At each contested point it picks one option and keeps the others pluggable.
 
----
+| Component | DeepSeek V4 / V4.1 | Kimi K3 (Jul '26) | Qwen3.8-Flash-Next = Qwen4 preview (Aug '26) | Nemotron 3 | MiniMax M3 | **Our choice** |
+|---|---|---|---|---|---|---|
+| Sequence mixing | CSA/HCA + SWA, no linear layers | **KDA** linear + Gated MLA hybrid | **Gated DeltaNet 3:1** + Qwen Sparse Attention | Mamba-2 + attention anchors | MSA block-sparse | **KDA 3:1 + DeepSeek-lineage global** |
+| Attention gating | — | Gated MLA | gated (earlier Qwen3.5) | — | — | **output gate on all softmax layers** |
+| Residual | mHC | **Attention Residuals** | gated residuals | standard | — | **pluggable; Block AttnRes default, mHC ablation** |
+| Position | partial RoPE | **NoPE** | RoPE | — | — | **NoPE on global layers** (KDA carries order) |
+| MoE | shared + routed, sqrt-softplus, hash-routed early layers | Stable **LatentMoE**, 16/896, quantile balancing | 6B active / 125B | **LatentMoE** 22/512 | — | **LatentMoE + shared + sqrt-softplus + hash-early** |
+| Lookup memory | Engram (paper) | — | **51B n-gram embeddings at layer 2** | — | — | **Engram at an early layer** |
+| MTP | MTP | — | multi-step MTP | **shared-weight, recursive** | — | **shared-weight recursive MTP** |
+| Optimizer | Muon | **Per-Head Muon** | — | — | — | **Muon + per-head + QK-clip; distributed Dion3-style** |
+| Precision | FP4 QAT experts; FP4 KV (V4.1) | MXFP4 QAT from SFT | — | **NVFP4 pretraining** | — | **BF16 → FP8 → FP4 (Blackwell)** |
+| Modality | native multimodal (V4.1) | native vision | multimodal line | — | native multimodal | **interface reserved; Phase 8** |
 
-## 3. Target architecture
-
-### 3.1 Model
-
-| Component | Today | Target | Origin |
-|---|---|---|---|
-| Layer config | one global `ModelConfig` | `ModelConfig.layers: list[LayerSpec]` (attention kind, FFN kind, cache kind) | V4 interleaving |
-| Residual | plain pre-norm residual | **mHC**: n=4 residual streams, doubly-stochastic mixing | mHC (Dec 2025), V4 |
-| Attention | GQA + RoPE | **MLA** → **DSA** → **CSA/HCA** + SWA branch + attention sink + QK-norm | V2/V3, V3.2, V4, V4.1 |
-| Positional | RoPE (full head) | Decoupled/partial RoPE (rope dims kept separate, stored BF16) + YaRN for extension | V2+ |
-| FFN | MoE, softmax router | Fine-grained routed + **1 shared expert**, **sqrt(softplus)** scores, normalized top-k gates, aux-free bias + tiny sequence-wise loss, **hash routing** in the first 1–2 layers | V3, V4 |
-| Output | LM head (tied) | LM head + **1 MTP module** (shared embedding/head) | V3 |
-| Memory | none | **Engram** hashed n-gram lookup memory (experimental tier) | Engram (Jan 2026) |
-| Precision | BF16 | BF16 → FP8 blockwise training (GPU permitting) → FP4 QAT for experts | V3, V4 |
-
-#### 3.1.1 `LayerSpec`: the organizing abstraction
-
-- **Purpose:** declare per-layer behavior so the model, cache manager and kernels all read one source of truth.
-- **Shape:** `LayerSpec(attn: AttnSpec, ffn: FFNSpec)`. Here `AttnSpec` is one of `GQA | MLA | DSA | CSA(m, k_sel, n_win) | HCA(m, n_win) | SWAOnly(n_win)`, and `FFNSpec` is one of `Dense | MoE | HashMoE`.
-- **Invariant:** each `AttnSpec` exposes `cache_specs() -> list[CacheSpec]` (see §3.3.1). The engine never inspects attention internals.
-- **Default stack (V4-like, for a 16-layer model):** layers 0–1 HCA with hash-MoE, layers 2–14 alternating CSA/HCA at about 3:1, and layer 15 SWA-only. Tune after the first ablations.
-
-#### 3.1.2 MLA (stepping stone and substrate)
-
-Illustrative small-model dimensions: `d_c=256` (KV latent), `d_cq=384` (Q latent), `d_nope=64`, `d_rope=32`, `d_v=64`, `H` heads.
-
-- `c_kv = RMSNorm(x W_dkv)` → `[T, d_c]`; `k_rope = RoPE(x W_kr)` → `[T, d_rope]`, shared across heads.
-- `c_q = RMSNorm(x W_dq)` → `[T, d_cq]`; `q_nope = c_q W_uq` → `[T, H, d_nope]`; `q_rope = RoPE(c_q W_qr)` → `[T, H, d_rope]`.
-- **Cached per token:** `[d_c + d_rope]`, one "head" with no `H_kv` dimension. That's about 288 values against GQA's `2·H_kv·D`.
-- **Train/prefill (non-absorbed):** `k = [c_kv W_uk ; k_rope]` → `[T, H, d_nope+d_rope]`; `v = c_kv W_uv` → `[T, H, d_v]`.
-  - ⚠ The current flash kernel assumes `D_qk == D_v`, so it needs a `D_qk ≠ D_v` generalization.
-- **Decode (absorbed):** `q_lat = q_nope · W_ukᵀ` → `[B, H, d_c]`; scores = `q_lat·c_kv + q_rope·k_rope`; `out_lat = softmax · c_kv` → `[B, H, d_c]`; then `W_uv`, then `o_proj`.
-  - This is an MQA decode kernel with `D_k = d_c + d_rope` and `D_v = d_c`.
-- **Invariant/test:** absorbed and non-absorbed outputs match within tolerance, and prefill-then-decode matches a full recompute.
-
-#### 3.1.3 DSA: lightning indexer and top-k sparse attention (on MLA)
-
-- Indexer: `H_I` small heads (for example 4) with dim `d_I` (for example 64).
-  - `I[t,s] = Σ_j w[t,j] · ReLU(q_I[t,j] · k_I[s])`, with `q_I` from `c_q` and `k_I` from `x`, shared.
-- Select the top `k_sel` causal positions (at our scale about 256; the paper uses 2048). MLA then attends only over those.
-- Cache: extra `IndexerKey` kind `[d_I]` per token, FP8 (FP4 in V4).
-- Training: (1) dense warm-up, where only the indexer trains, using KL(main-attention distribution summed over heads ‖ softmax(I)); (2) sparse training of everything.
-- **Invariant:** if `k_sel ≥ context length`, the output equals dense MLA exactly. That makes it the core test.
-
-#### 3.1.4 CSA / HCA (the goal attention)
-
-- **CSA (m=4):** compress each window of about 4 tokens (overlapping) into one KV entry using learned, per-dimension, softmax-gated pooling with a positional bias. Entries are shared-KV (MQA-style, MLA-like latent plus BF16 rope part).
-  - A lightning indexer over the compressed entries picks the top-k.
-  - Attention runs over the selected compressed entries, a **sliding window of recent raw tokens**, and an **attention sink**.
-- **HCA (m=128):** the same compression but far more aggressive, with **dense** attention over all compressed entries (no indexer).
-- Queries are low-rank, the output projection is grouped, and Q and KV entries are RMS-normalized.
-- **Key invariant (visibility):** every past token is visible either through a *completed* compressed entry or through the SWA window. So `n_win ≥ m_max`, and tokens in a partial group live in a per-request **tail state** until the group completes.
-- **Stretch: CSA2 (V4.1-Flash).** Only a few layers build a fresh candidate pool; later layers *re-index* within that pool or *reuse* earlier selections. Add FP4 KV and SWA "bounded replay" (rebuilding local state from a short cached suffix instead of persisting it).
-- *Exact pooling formulas and hyperparameters get verified against the papers at implementation time. The V4.1 details here come from the abstract and secondary write-ups.*
-
-#### 3.1.5 mHC residual streams
-
-- Residual state `X: [T, n, D]`, with n=4. The embedding is broadcast to n streams, and the final output is the mean over streams before the final norm.
-- For each sub-layer `F` (attention and FFN each):
-  - `u = Σ_i H_pre[i]·X_i` → `[T, D]`
-  - `y = F(RMSNorm(u))`
-  - `X' = H_res·X + H_post ⊗ y`
-- `H_pre, H_post ≥ 0` via sigmoid. `H_res [T, n, n]` is projected onto the doubly-stochastic (Birkhoff) polytope with about 20 Sinkhorn iterations, so its spectral norm is ≤ 1.
-- Coefficients are dynamic (a small linear map on the normalized flattened `X`) plus a static bias.
-- **Invariants:** rows and columns of `H_res` sum to 1 (tolerance), and n=1 with identity mixing reduces exactly to today's residual. Tests cover both.
-- **Cost:** residual activations grow n×. Plan activation recompute and later a fused Triton Sinkhorn+mix kernel.
-
-#### 3.1.6 MoE v2 (evolves D3)
-
-- Scores: `s = sqrt(softplus(router_logits))`, replacing the softmax. Select with `s + bias` (the existing aux-free bias). Gates are `s_topk / Σ s_topk` times a routed scaling factor.
-- **Shared expert:** a dense SwiGLU in parallel, always active.
-- Add a tiny sequence-wise balance loss and remove the current global aux loss from the default objective.
-- **Hash-MoE** layers use `expert = hash(token_id) mod N`, with no router. They're deterministic, so tests can compare against a lookup.
-- Existing grouped kernels are reused unchanged, since the change is to routing, not the kernels.
-
-#### 3.1.7 MTP
-
-- One module predicting `t_{i+2}`:
-  - `h' = Block(W_proj [RMSNorm(h_i); RMSNorm(Emb(t_{i+1}))])`
-  - It shares the embedding and LM head. Loss weight λ is about 0.3, decaying to 0.1.
-- **Packing invariant:** MTP targets never cross a `cu_seqlens` document boundary. This is the most likely real bug, so test it explicitly.
-- At inference the MTP head is the **speculative-decoding draft** (§3.3.4).
-
-#### 3.1.8 Engram (experimental tier)
-
-- Hashed 2- and 3-gram embedding tables, multi-head hashing, and a context-aware gate on the hidden state, inserted at a few early layers.
-- Lookups are addressed by token IDs alone, so tables can live in host memory with prefetch.
-- It comes last because it's the least proven in production. It also adds a new "static memory" resource type to the engine.
-
-### 3.2 Training system
-
-- **Data:** deterministic, sharded, resumable streaming (FineWeb-Edu for pretraining). Pre-tokenized shards on disk and document packing (already done). A later stage adds long-document upsampling for context extension.
-- **Tokenizer:** keep HF `tokenizers` BPE. Retrain at 32k–64k vocab with **reserved special tokens**: BOS/EOS, role markers, `<think>`/`</think>`, tool-call open/close, tool-result, and several spare IDs. Reserving them now avoids a retokenize later.
-- **Optimizer:** Muon for matrices, AdamW for embeddings, norms, router bias and gates. This matches V4, which is Muon-trained.
-- **Precision:** BF16 autocast baseline. Then FP8 blockwise GEMMs (1×128 activation tiles, 128×128 weight tiles, FP32 accumulation), *if your GPU has FP8 tensor cores* (Ada/Hopper/Blackwell). FP4 QAT (fake-quant) for experts can be simulated on any GPU.
-- **Parallelism (designed for, used later):** FSDP2 (`fully_shard`) plus expert parallelism (all-to-all dispatch around the grouped kernels). Interfaces take an explicit process group from day one, and are testable with 2 processes on CPU/gloo.
-- **Checkpoints:** PyTorch DCP for training state, and a **safetensors** export plus JSON config for serving.
-- **Context extension:** pretrain at 4k, then extend to 32k+ with YaRN. The CSA/HCA benefit only shows up at long context.
-- **Post-training:** SFT (chat plus reasoning format), then tool-call and RAG traces, then small-scale **GRPO** with verifiable rewards (math, format, and tool-call validity).
-
-### 3.3 Inference engine (evolves D5–D8)
-
-#### 3.3.1 Heterogeneous cache manager
-
-- **Purpose:** generalize today's single-kind `KVCacheManager` so one manager owns memory for every cache kind a `LayerSpec` stack needs.
-- `CacheSpec` kinds:
-
-  | Kind | Contents |
-  |---|---|
-  | `FullKV` | GQA, `[H_kv, 2, D]` per token |
-  | `LatentKV` | MLA, `[d_c + d_rope]` per token |
-  | `IndexerKey` | `[d_I]` per token or entry |
-  | `CompressedKV(m)` | 1 entry per m tokens |
-  | `SlidingWindow(n)` | fixed-size ring per request, not length-paged |
-  | `TailState` | partial compression group per request |
-  | `EngramStatic` | shared, read-only |
-
-- Page pools are grouped by entry byte size. Each request has one block table per pool.
-- **Invariant:** the page size in tokens is a multiple of the largest compression ratio, so compressed entries never straddle pages or prefix-cache blocks.
-- Ownership stays as in D5: the manager owns allocation, lengths and tables; per-layer storage validates and writes; the CPU is authoritative with a device mirror.
-
-#### 3.3.2 Prefix caching and tiers
-
-- Blocks are identified by a chained hash: `hash(parent_hash, block_token_ids, extra_keys)`. Blocks are ref-counted and shared, and freed blocks go to an LRU evictable list.
-- Tiers run GPU → pinned host → SSD (DeepSeek's on-disk KV cache). Compressed caches make offload cheap, since V4.1 reports about 890 bytes per token of global KV.
-- This is what makes RAG and agents fast: stable system prompts and documents come first, so their KV is reused across turns and requests.
-
-#### 3.3.3 Scheduler
-
-- Token-budget scheduling that mixes chunked prefill with decode in the same step.
-- **Incremental page growth with preemption** (recompute or swap), replacing FIFO full-lifetime reservation. This is the known limitation D6 documents.
-- Per-request sampling parameters, cancellation, and priorities.
-
-#### 3.3.4 Speculative decoding
-
-- The MTP head drafts 1–2 tokens and the main model verifies them in one forward.
-- Verification uses standard rejection sampling, so the output distribution is exactly the target model's.
-- **Invariant/test:** a greedy speculative run produces exactly the same tokens as a non-speculative run.
-- Cache rollback on rejection is a manager operation: truncate the lengths, and never rewrite pages.
-
-#### 3.3.5 Other engine pieces
-
-- **Constrained decoding:** a per-request `TokenMask` interface, driven by a JSON-schema→automaton engine.
-  - Write a minimal one first for learning, then allow swapping in XGrammar or llguidance.
-  - Tool calls are always schema-valid.
-- **CUDA graphs** for decode at fixed batch buckets.
-- **Weight quantization for serving:** FP8, then FP4 or weight-only dequant for experts.
-- **Kernels:** paged decode kernels per attention kind (MQA-latent decode, sparse top-k gather decode, compressed plus SWA decode), each with a PyTorch reference.
-
-### 3.4 Serving API
-
-- An async front end (FastAPI) with an engine loop on its own thread, which keeps D6's single owning thread.
-- `/v1/chat/completions` (streaming SSE, `tools`, `tool_choice`, `response_format`), `/v1/completions`, `/v1/models`, `/health`, `/metrics`.
-- API keys, rate limiting, request timeouts, and structured logs. Metrics: TTFT, TPOT, queue depth, cache hit rate, and spec-decode acceptance rate.
-
-### 3.5 Agent layer: tools and RAG
-
-- **Chat template:** roles, interleaved `<think>` kept across tool rounds (V4 behavior), and dedicated tool-call tokens with a JSON body. The template lives beside the tokenizer and is versioned with the checkpoint.
-- **Tool runtime:**
-  - A tool registry of JSON-schema tools and an **MCP client**, so any MCP server's tools appear automatically.
-  - A sandboxed code-exec tool.
-  - A bounded agent loop: max steps, a timeout, and tool errors returned to the model.
-- **RAG:**
-  - Ingest: parse, then chunk with contextual chunk headers, then embed.
-  - Retrieve: **hybrid BM25 + dense** with reciprocal-rank fusion, then a cross-encoder reranker.
-  - Answer with **citations**.
-  - Retrieval is exposed as a tool (`search_docs`), making it *agentic* RAG rather than always-prepend.
-  - `Embedder` and `VectorIndex` interfaces: an in-process HNSW/FAISS index for development, pgvector or Qdrant for deployment. Start with an open embedding model behind the interface.
-
-### 3.6 Deployment
-
-- A Docker image (CUDA base, `uv`-locked), safetensors weights, and config plus template versioning.
-- A single-GPU cloud instance first. Later, optionally disaggregated prefill and decode (separate workers sharing KV via the tier store).
-- CI: GitHub Actions runs CPU tests and lint on every push; GPU kernel tests run locally with a documented command.
-
-### 3.7 Evaluation (built alongside, not at the end)
-
-- **Model:** validation loss and perplexity, small benchmarks (HellaSwag, ARC-e, GSM8K-lite), needle-in-haystack and RULER-style long-context probes, and MoE load stats (existing `MoeStats`).
-- **Engine:** throughput, TTFT/TPOT, peak memory, KV bytes per token per `CacheSpec`, prefix-hit rate, and spec acceptance rate.
-- **Agent:** tool-call validity rate, task success on a small tool suite, and RAG recall@k and citation precision.
+**What v2 deliberately does *not* adopt, and why:**
+- **Diffusion LMs as the main model.** Mercury 2, Gemma Diffusion and Nemotron Diffusion are now production-grade and fast. But every frontier *agentic* model above is autoregressive, and our whole engine is built for autoregressive decoding (KV and state caches, tool loops, RL). Block diffusion shows up here as a **DFlash-style speculative drafter** instead (Phase 8).
+- **Titans / test-time-training memory.** Still research-stage. None of the open frontier models above ships it.
+- **Looped or shared depth** (for example Nanbeige 4.2). This is a small-model parameter-saving trick, not a frontier trend.
 
 ---
 
-## 4. Roadmap
+## 3. Guiding principles
 
-Each phase has exit criteria. Phases are ordered by dependency; the durable abstractions come early.
+1. **Reference first.** Every fused or Triton kernel has a slow PyTorch reference, and a test compares the two. This is already the repo's practice.
+2. **Heterogeneous by design.** Each layer's mixer, FFN, residual and cache kind are declared as a `LayerSpec`. Contested choices (residual type, global-attention type, position encoding) are config switches, so they can be ablated rather than argued about.
+3. **The engine/API boundary is the seam.** The agent harness, RAG and evals talk only to the OpenAI-compatible API, so they can be built against any model.
+4. **Scale-agnostic code.** Every training component takes a `DeviceMesh` from the start. One GPU is simply a mesh of size 1 (§5.2).
+5. **Durable abstractions before fast paths.** The state manager covers KV, recurrent and lookup state from the start.
 
-**Phase 0: Stabilize** (now)
-- Finish D8 FP8 KV (steps 3–6 in `todo`) and fix the broken imports/tests listed in the handoff.
-- Get a green full suite and add CPU CI on GitHub Actions.
-- *Exit:* all tests green, and the FP8 decode matches BF16 within the stated tolerance.
+---
+
+## 4. Target model
+
+### 4.1 `LayerSpec`
+
+- Structure: `LayerSpec(mixer: MixerSpec, ffn: FFNSpec)`, plus a global `ResidualSpec`.
+  - `MixerSpec` is one of `GQA | MLA | DSA | CSA(m, k_sel, n_win) | HCA(m, n_win) | GDN | KDA`.
+  - `FFNSpec` is one of `Dense | MoE | LatentMoE | HashMoE`.
+- **Invariant:** each mixer exposes `state_specs() -> list[StateSpec]` (§6.1). The engine never inspects mixer internals.
+- **Default stack for a 16-layer model:**
+  - units of `[KDA, KDA, KDA, Global]`, with Global alternating CSA and HCA once Phase 5 lands (MLA/DSA before that)
+  - `HashMoE` in layer 0
+  - Engram after layer 1
+
+### 4.2 Linear attention: Gated DeltaNet → KDA (new in v2)
+
+This is the most important addition. Three of every four layers carry a **fixed-size recurrent state** instead of a growing KV cache.
+
+- **Inputs:** `q, k: [T, H, d_k]` and `v: [T, H, d_v]`, after a short causal depthwise conv (kernel 4) and L2-normalization of q and k. Per-token `β_t ∈ (0,1)` and a decay gate.
+- **GDN (implemented first):** scalar decay per head.
+  - `S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ`
+  - `o_t = S_tᵀ q_t`
+  - State `S: [H, d_k, d_v]` per request.
+- **KDA (target):** the same delta rule with **channel-wise** decay `Diag(a_t)` over `d_k`. It's finer-grained forgetting, and Kimi reports that it outperforms GDN.
+- **Output:** RMSNorm plus a sigmoid output gate, then `o_proj`.
+- **Kernels:** the recurrent form is the reference (and is the decode path). The chunkwise-parallel form (WY/UT transform, chunk size 64) is the training and prefill path.
+- **Invariants:**
+  - chunkwise output equals recurrent output
+  - **state resets at every `cu_seqlens` boundary** (packed varlen, D1)
+  - prefill-then-decode equals a full recompute
+
+### 4.3 Global attention: the DeepSeek lineage (kept from v1, now gated)
+
+These layers make up 1 in 4 of the stack. Each step builds on the previous one:
+
+1. **MLA** (latent KV `[d_c + d_rope]` per token, absorbed decode).
+   - ⚠ Needs the flash kernel generalized to `D_qk ≠ D_v`.
+2. **DSA** (lightning indexer plus top-k). **Invariant:** `k_sel ≥ len` gives exactly dense MLA.
+3. **CSA/HCA** (sequence-compressed entries at m=4 and m=128, plus an SWA branch and a sink).
+   - **Visibility invariant:** every past token is visible through a completed compressed entry or the window, so `n_win ≥ m_max`. Tokens in a partial group live in a tail state.
+4. **Stretch:** V4.1-Flash CSA2 cross-layer index reuse and FP4 KV.
+
+Additions in v2:
+- **Output gating** on every softmax-attention layer: `o = softmax_attn(...) ⊙ σ(x W_g)`. It's cheap, and it removes the attention-sink and massive-activation pathologies.
+- **NoPE by default.** In a hybrid stack the KDA layers carry position, so global layers can drop RoPE (Kimi's choice). That also removes the YaRN context-extension step. Keep partial RoPE as a config switch for ablation.
+
+### 4.4 Residual: pluggable, with Block AttnRes as default (new in v2)
+
+- `ResidualSpec = Standard | BlockAttnRes(num_blocks≈8) | mHC(n=4)`.
+- **Block AttnRes (Kimi):**
+  - Layers are grouped into blocks.
+  - Each layer's input is a softmax-weighted mix over the embedding, the completed block representations and the current partial block, using a learned per-layer query.
+  - Memory is O(blocks × d). Kimi reports about 1.25× compute efficiency, under 4% training overhead and under 2% inference overhead.
+- **mHC (DeepSeek):** n residual streams mixed by a doubly-stochastic (Sinkhorn) matrix. Memory is n× the residual.
+- **Why AttnRes is the default:** it's the newer result, it's cheaper in memory (which matters on rented GPUs), and it's used by the newest frontier model (K3). mHC is implemented as the comparison. **Decision rule:** keep whichever wins the Phase 1 ablation at equal compute.
+- **Invariant:** both reduce to the standard residual in their degenerate configuration, and tests check that.
+
+### 4.5 LatentMoE v2 (evolves D3)
+
+- **LatentMoE:** tokens are projected `d → ℓ` (for example `ℓ = d/4`) before routed experts and back afterwards. At the same cost you can scale up both expert count and top-k by `d/ℓ`.
+  - **All-to-all traffic under expert parallelism also shrinks by `d/ℓ`.** That's the key reason to choose it when you plan to rent multiple GPUs.
+- **Shared expert:** full-width SwiGLU, always active.
+- **Scoring:** `sqrt(softplus(logits))` with normalized top-k gates. Load balancing uses the existing aux-free bias, and K3's **quantile balancing** is an ablation. Add a tiny sequence-wise loss.
+- **Hash-routed MoE** in the first layer(s).
+- The existing grouped kernels carry over unchanged; they just run at width ℓ.
+
+### 4.6 Engram n-gram memory (promoted from experimental in v1)
+
+- Hashed 2- and 3-gram embedding tables with multi-head hashing, a context-aware gate on the hidden state, and a residual add at an early layer.
+- **Why it's now core:** DeepSeek published it, and the Qwen4 preview ships 51B n-gram parameters at layer 2.
+- Lookups depend only on token IDs, so tables can live in host memory with prefetch. The engine treats them as a read-only state kind.
+
+### 4.7 Shared-weight recursive MTP
+
+- One MTP block (sharing the embedding and LM head) is trained at several offsets and applied recursively at inference to draft k tokens (Nemotron 3 reports an average acceptance length of 3.45).
+- **Packing invariant:** MTP targets never cross a `cu_seqlens` boundary.
+
+### 4.8 Precision
+
+- **Path:** BF16, then FP8 blockwise (Ada/Hopper), then FP4.
+  - FP4 means NVFP4 or MXFP4, on Blackwell rentals.
+  - FP4 QAT for experts from the start of SFT (following V4 and K3).
+- Keep attention, latent projections, embeddings and the last ~15% of layers in BF16. That's Nemotron's recipe.
+
+### 4.9 Multimodal (reserved)
+
+- The token stream and chat template reserve image placeholder IDs, and `embed()` accepts pre-computed patch embeddings.
+- Native vision is Phase 8.
+
+---
+
+## 5. Training system
+
+### 5.1 Core
+
+- **Data:** deterministic, sharded, resumable streaming from pre-tokenized shards, with document packing (done).
+- **Tokenizer:** retrain the HF BPE at 64k vocab with reserved special tokens: roles, `<think>`, tool-call and tool-result tokens, image placeholders, and spares.
+- **Optimizer:** Muon for matrices (with **per-head Muon** for attention projections and **QK-clip** for logit stability), and AdamW for embeddings, norms, gates, biases and Engram tables.
+- **Post-training:**
+  - SFT, then **DAPO** (dense layers) or **GSPO** (sequence-level; more stable for MoE), on verifiable rewards (math answers, unit tests, schema-valid tool calls).
+  - Then **agentic RL in sandboxes**, with multi-turn rollouts and outcome rewards.
+  - Optionally, domain-expert RL runs merged via on-policy distillation (V4's recipe).
+
+### 5.2 Multi-GPU scaling (new in v2, answering your point 1)
+
+- **One `DeviceMesh`, four dimensions:** `dp_replicate × dp_shard × ep × cp`. A local GPU is `1×1×1×1`. Tensor and pipeline parallelism are deferred because they aren't needed below roughly 30B total parameters. torchtitan is the reference design.
+  - **FSDP2** (`fully_shard`) for parameters, gradients and optimizer state.
+  - **Expert parallelism:** experts are sharded over `ep`, with all-to-all dispatch and combine around the existing grouped kernels. LatentMoE cuts that traffic by `d/ℓ`.
+  - **Context parallelism** for long sequences:
+    - Global layers all-gather KV. Compressed CSA/HCA KV makes that cheap.
+    - KDA layers pass chunk states rank to rank.
+- **Distributed Muon:** orthogonalization needs whole matrices. Each matrix gets an owning rank that gathers, orthogonalizes and scatters. Upgrade to Dion3-style megabatching (one collective per weight shape) and Gram Newton–Schulz.
+- **Rental-proof checkpoints:**
+  - async **DCP** saves that **reshard** (save on 8 GPUs, resume on 4 or 16)
+  - data-loader state included
+  - a checkpoint every N minutes so a preempted spot instance loses little work
+- **Testing:** all mesh logic runs under multi-process CPU/gloo tests, then a 2-GPU rented smoke test, before any expensive run.
+- **Scale tiers** (same code, different configs):
+
+  | Tier | Hardware | Model (total / active) | Tokens | Purpose |
+  |---|---|---|---|---|
+  | S | your GPU | ~0.1–0.5B / ~50–150M | 1–10B | development, ablations |
+  | M | 1 rented 8×H100/H200/B200 node | ~3–8B / ~0.5–1B | 50–200B | first real model |
+  | L | multi-node | as budget allows | — | code supports it; the budget decides |
+
+- **Cost estimate:**
+
+  `hours ≈ 6 · N_active · tokens / (GPUs · peak_FLOPs · MFU · 3600)`
+
+  Example: 1B active parameters, 100B tokens, 8×H100 (about 989 dense BF16 TFLOPs each) at 35% MFU comes to roughly 60 hours, about **$1.2–1.7k** at $2.5–3.5 per GPU-hour. That's optimistic; custom MoE and hybrid kernels usually get lower MFU.
+
+---
+
+## 6. Inference engine (evolves D5–D8)
+
+### 6.1 Unified state manager
+
+This generalizes `KVCacheManager` into one owner for every per-request state kind:
+
+| `StateSpec` | Shape | Paging |
+|---|---|---|
+| `FullKV` | `[H_kv, 2, D]` / token | paged |
+| `LatentKV` | `[d_c + d_rope]` / token | paged |
+| `IndexerKey` | `[d_I]` / token or entry | paged |
+| `CompressedKV(m)` | 1 entry / m tokens | paged |
+| `SlidingWindow(n)`, `TailState` | fixed size / request | slot |
+| `RecurrentState` (KDA) | `[H, d_k, d_v]` + conv state `[H·d, 3]` / request | slot |
+| `EngramTable` | shared, read-only | host-resident + prefetch |
+
+Invariants and ownership:
+- Page size in tokens is a multiple of the largest compression ratio *and* of the KDA chunk size.
+- Ownership stays as in D5: the manager is CPU-authoritative with a device mirror, and storage only validates.
+
+### 6.2 Prefix caching
+
+- Chained block hashes, ref-counted pages, and LRU eviction across GPU, pinned host memory and SSD tiers.
+- **Recurrent layers can't be sliced by prefix.** So the engine stores **state snapshots at page boundaries** for cached prefixes, the approach Kimi contributed to vLLM for KDA.
+- **Invariant:** resuming from a snapshot gives the same result as a full prefill.
+
+### 6.3 Scheduler and decoding
+
+- A token-budget scheduler that mixes chunked prefill with decode, with incremental page growth and **preemption**. It replaces D6's full-lifetime reservation.
+- **Speculative decoding** with recursive MTP drafts and rejection-sampling verification.
+  - Rejecting a draft means **rolling back recurrent state**: keep per-draft-position states, or recompute from the last accepted state.
+  - **Invariant:** greedy speculative output equals greedy non-speculative output.
+- **Constrained decoding:** a per-request token mask driven by a JSON-schema automaton. Build a minimal one first, then allow swapping in XGrammar or llguidance.
+- **Engine plumbing:** CUDA graphs for decode, and weight quantization for serving (FP8/FP4).
+- **Sparse-attention kernels:** use MiniMax's "KV-outer, gather-Q" loop order for block-sparse prefill, so each KV block is read once.
+
+---
+
+## 7. Serving, agent harness, deployment, evaluation
+
+- **Serving:** FastAPI async front end, with the engine loop on its own thread (D6).
+  - Endpoints: `/v1/chat/completions` (SSE, `tools`, `response_format`), `/v1/models`, `/health`, `/metrics`.
+  - Auth and rate limiting.
+- **Agent harness.** The 2026 view is that the model supplies the intelligence and the harness makes it useful.
+  - Chat template with interleaved thinking kept across tool rounds, and a bounded agent loop.
+  - **Tools** via an MCP client, plus **sandboxed code execution** (allow-listed, no network by default) as the general-purpose tool.
+  - **Context management:** compaction when context fills, offloading large tool outputs to files, and **skills** (progressive disclosure, so not every tool schema sits in context).
+  - **Memory:** persistent memory files injected at start.
+  - **Subagents** with isolated contexts for parallel subtasks, and planning plus self-verification loops.
+- **Agentic RAG:**
+  - Retrieval is a tool the model decides to call, and RL can later train when and how to search.
+  - Search: hybrid BM25 + dense + **late-interaction (ColBERT-style multi-vector)** retrieval, with contextual chunk headers and a cross-encoder reranker.
+  - If retrieval comes back weak, it falls back to broader search. Answers cite sources.
+  - Stable documents go first so prefix caching reuses their state.
+  - Treat retrieved text as untrusted: defend against prompt injection and poisoned documents.
+- **Deployment:** Docker (CUDA base, `uv`-locked), safetensors, and versioned configs and chat templates. Start on a single cloud GPU; disaggregated prefill/decode comes later. CPU CI on GitHub Actions.
+- **Evaluation** (built alongside, not at the end):
+  - **Model:** loss, small benchmarks, needle-in-haystack and RULER-style long-context probes, and MoE load stats.
+  - **Engine:** TTFT, TPOT, memory and state bytes per token, prefix-hit rate, spec acceptance.
+  - **Agent:** tool-call validity, task success, RAG recall@k and citation precision.
+
+---
+
+## 8. Roadmap
+
+Each phase has exit criteria.
+
+**Phase 0: Stabilize**
+- Finish D8 FP8 KV and fix the broken imports and tests. Add CPU CI.
+- Thread `DeviceMesh` through the training entry points (size-1 mesh, no behavior change).
+- *Exit:* all tests green, and FP8 decode matches BF16 within tolerance.
 
 **Phase 1: Model core I**
-- `LayerSpec` refactor (no behavior change: GQA plus MoE stays the default).
-- QK-norm and attention sink.
-- **MLA** (non-absorbed train path, absorbed decode kernel, `D_qk≠D_v` flash generalization).
-- **MoE v2** and **mHC**.
-- Small ablations on FineWeb-Edu against the current baseline.
-- *Exit:* each feature has reference-vs-kernel tests, MLA absorbed equals non-absorbed, n=1 mHC equals the old residual, and there's a loss-curve comparison table.
+- `LayerSpec` refactor, QK-norm, gated attention, **MLA**, **LatentMoE v2**, and **residual interface with Block AttnRes and mHC**.
+- Tier-S ablations: each feature against the current baseline, and AttnRes against mHC.
+- *Exit:* reference-vs-kernel tests pass, and there's an ablation table.
 
-**Phase 2: Training system**
-- Deterministic resumable sharded data, the retrained tokenizer with reserved specials, **MTP**, activation recompute, DCP checkpoints plus safetensors export, and the eval harness.
-- FP8 training if the GPU supports it.
-- Train the first "M-tier" model (sized once the GPU is known).
-- *Exit:* a resumable multi-day run and an eval dashboard.
+**Phase 2: Model core II (hybrid)**
+- **GDN, then KDA** (recurrent reference, then chunkwise Triton kernel, with varlen state resets). The 3:1 hybrid stack with NoPE on global layers.
+- **Engram.**
+- *Exit:* chunkwise equals recurrent; the hybrid beats the all-global baseline at equal compute.
 
-**Phase 3: Engine II**
-- `CacheSpec` heterogeneous manager (GQA/MLA kinds implemented, the others stubbed with tests), prefix caching, a token-budget scheduler with chunked prefill and preemption, per-request sampling, **MTP speculative decoding**, and CUDA graphs.
-- *Exit:* greedy spec output equals the baseline, and the preemption/prefix tests pass under a random workload (extending the existing 60-request stress test).
+**Phase 3: Training system and scale-out**
+- Retrained tokenizer and shared-weight MTP.
+- **FSDP2 + EP + CP on the mesh**, distributed Muon, reshardable async DCP.
+- FP8, and the eval harness.
+- A 2-GPU rented smoke test, then the **first Tier-M run**.
+- *Exit:* resume works on a different GPU count, and the model is trained with dashboards.
 
-**Phase 4: Long-context attention**
-- **DSA** (indexer warm-up plus sparse training), then **CSA/HCA + SWA + sink** with interleaving, their decode kernels, YaRN extension to 32k+, and FP4 KV.
-- Stretch: CSA2 cross-layer index reuse.
-- *Exit:* `k_sel ≥ len` equals dense, the visibility invariant is tested, and measured KV bytes per token and decode FLOPs against the MLA baseline at 32k.
+**Phase 4: Engine II**
+- Unified state manager (KV, recurrent and Engram kinds), prefix caching with state snapshots, token-budget scheduler with preemption, MTP speculative decoding with state rollback, and CUDA graphs.
+- *Exit:* greedy speculative output equals greedy non-speculative output, and snapshot resume equals full prefill under a random-workload stress test.
 
-**Phase 5: Post-training and agent**
-- Chat template, SFT, constrained decoding, the tool runtime with MCP, the RAG pipeline, and small GRPO.
-- *Exit:* ≥99% schema-valid tool calls under constraints and reported RAG recall@k.
+**Phase 5: Long-context global attention**
+- **DSA, then CSA/HCA** for the global layers, FP4 KV, and context extension to 128k or more.
+- Stretch: CSA2.
+- *Exit:* dense-equivalence and visibility tests pass, and state bytes per token and FLOPs are measured.
 
-**Phase 6: Serving and deployment**
-- OpenAI-compatible API with streaming, auth, metrics, Docker, a cloud deploy, and host/SSD KV tiers.
-- *Exit:* a public HTTPS endpoint serving the agent, with a load-test report.
+**Phase 6: Post-training and agent harness**
+- SFT, DAPO/GSPO with verifiable rewards, and sandboxed agentic RL.
+- Constrained decoding, the harness (MCP, code exec, compaction, skills, memory, subagents), and agentic RAG.
+- *Exit:* ≥99% schema-valid tool calls, and reported task success and RAG recall.
 
-**Phase 7: Distributed and experimental**
-- FSDP2 plus expert-parallel all-to-all, disaggregated prefill/decode, **Engram**, and the V4.1 causal encoder–decoder split.
+**Phase 7: Serving and deployment**
+- API, Docker, cloud deploy, host/SSD tiers, observability.
+- *Exit:* a public HTTPS endpoint and a load-test report.
 
----
-
-## 5. What changes in current code
-
-| Current | Change | Kept |
-|---|---|---|
-| `model/model_config.py` | add `layers: list[LayerSpec]`, MLA/MoE/mHC/MTP fields | existing fields remain as defaults |
-| `model/attention.py` | becomes the GQA implementation of an `AttnSpec` interface; new `mla.py`, `dsa.py`, `csa.py` | mode split train/prefill/decode |
-| `model/decoder_block.py` | wraps sub-layers in mHC; FFN chosen by `FFNSpec` | pre-norm structure |
-| `model/moe/router.py` | sqrt-softplus scoring, normalized gates, hash router variant | aux-free bias update |
-| `kernals/flash_attention.py` | support `D_qk ≠ D_v`; sink logits | varlen packed layout (D1) |
-| `inference/cache_manager.py` | generalized to `CacheSpec` pools, ref-counted prefix blocks, truncate for spec decode | CPU-authoritative ownership (D5) |
-| `inference/paged_kv_cache.py` | one storage class per `CacheSpec` kind | validate-only storage |
-| `inference/continuous_batch_scheduler.py` | token-budget scheduler with preemption | `submit`/`step` API (D6) |
-| — | new `serving/`, `agent/`, `rag/`, `evals/` packages | — |
+**Phase 8: Frontier stretch**
+- Native vision, a DFlash-style block-diffusion drafter, NVFP4 pretraining on Blackwell, disaggregated serving, and V4.1's causal encoder–decoder split.
 
 ---
 
-## 6. Risks and honest limits
-
-- **Capability at our scale.** A model trainable on one GPU (roughly 0.3–1B total parameters, a few billion to ~10B tokens) will be weak at tool use and RAG. Principle 3 is the mitigation: the agent layer is built against the API, so it can be developed with a stronger open model while our own model catches up.
-  - **Optional milestone:** once MLA and DeepSeekMoE exist, load **DeepSeek-V2-Lite** or **Moonlight-16B-A3B** (a Muon-trained DeepSeek-V3-architecture model) weights. That gives a real-world correctness oracle, and a serveable model with quantization.
-- **Long-context gains only appear at long context.** CSA/HCA at 512 tokens is pointless, which is why Phase 4 comes with context extension.
-- **mHC memory.** It multiplies residual activation memory by n, so recompute is required.
-- **Hardware gates.** FP8 training needs Ada or newer, and native FP4 needs Blackwell. Without them these become simulated (QAT) rather than faster.
-- **Very new papers.** The V4.1-Flash details (CSA2, bounded replay, CED) come from an arXiv paper published this month and its write-ups. Treat them as stretch goals until read in full.
-
----
-
-## 7. Decisions to accept
+## 9. Decisions to accept
 
 | ID | Proposal |
 |---|---|
-| G1 | Target model = DeepSeek-V4-style hybrid (CSA/HCA + SWA + sink), reached via GQA → MLA → DSA → CSA/HCA |
-| G2 | Per-layer `LayerSpec` config as the organizing abstraction |
-| G3 | mHC residual streams (n=4) |
-| G4 | MoE v2: shared expert, sqrt-softplus scoring, hash-routed early layers, aux-free + tiny sequence loss |
-| G5 | MTP module, reused as the speculative draft |
-| G6 | Heterogeneous `CacheSpec` cache manager with prefix caching and GPU→host→SSD tiers |
-| G7 | Token-budget scheduler with chunked prefill and preemption, replacing full-lifetime reservation |
-| G8 | Precision path: BF16 → FP8 training (if supported) → FP4 QAT experts; FP8→FP4 KV |
-| G9 | Engine/API seam: OpenAI-compatible server; agent, RAG and evals depend only on it |
-| G10 | Agent layer: special-token chat template, constrained tool calls, MCP client, agentic hybrid RAG |
-| G11 | Deployment: Docker + safetensors + single cloud GPU; CPU CI on GitHub Actions |
-| G12 | Roadmap order Phase 0 → 7 as in §4 |
-| G13 | Engram and the V4.1 encoder–decoder split stay experimental (Phase 7) |
+| G1 | Hybrid stack: KDA linear layers, 3:1 with gated global attention; global follows DeepSeek MLA → DSA → CSA/HCA |
+| G2 | `LayerSpec` / `StateSpec` / `ResidualSpec` as the organizing abstractions |
+| G3 | Residual pluggable: Block AttnRes default, mHC ablation; keep the winner |
+| G4 | LatentMoE + shared expert + sqrt-softplus + hash-routed early layers |
+| G5 | Engram n-gram memory as a core feature |
+| G6 | Shared-weight recursive MTP, reused as the speculative draft |
+| G7 | NoPE on global layers by default (RoPE as ablation) |
+| G8 | Muon family: per-head Muon, QK-clip, distributed Dion3-style implementation |
+| G9 | DeviceMesh from Phase 0; FSDP2 + EP + CP; reshardable DCP; scale tiers S/M/L |
+| G10 | Unified state manager (KV + recurrent + lookup), prefix cache with state snapshots, preemptive token-budget scheduler |
+| G11 | Precision: BF16 → FP8 → FP4 (Blackwell); FP4 QAT from SFT |
+| G12 | Post-training: DAPO/GSPO on verifiable rewards, then sandboxed agentic RL |
+| G13 | Agent harness (MCP, sandbox code exec, compaction, skills, memory, subagents) + agentic hybrid/late-interaction RAG behind an OpenAI-compatible API |
+| G14 | Roadmap Phases 0–8 as in §8; autoregressive (not diffusion) main model |
 
-## 8. Open questions (facts only you have)
+## 10. Open questions (facts only you have)
 
-1. **GPU model and VRAM.** This sets the model size tier, whether FP8 training is real or simulated, and the context lengths that fit.
-2. **Deployment audience.** Is this a public demo, just you, or a small group? That sets auth, cost ceiling and cloud choice.
+1. **Your local GPU model and VRAM.** This sets Tier S and whether FP8 is real locally.
+2. **Rough rental budget per training run.** For example: under $500, under $2k, or more. This sets the Tier-M model size.
+3. **Deployment audience:** just you, a small group, or public.
 
 ---
 
 ## Sources
 
-- DeepSeek-V4: *Towards Highly Efficient Million-Token Context Intelligence*: https://arxiv.org/html/2606.19348v1
-- DeepSeek-V4.1-Flash: *Pushing the Limits of KV Cache Compression* (Sept 2026): https://arxiv.org/abs/2609.19969
-- Hugging Face, DeepSeek-V4 overview: https://huggingface.co/blog/deepseekv4
-- V4.1-Flash explainer (CSA2, bounded replay, CED): https://www.louisbouchard.ai/deepseek-v41-flash-kv-cache-writing-benchmark/
-- mHC: Manifold-Constrained Hyper-Connections: https://arxiv.org/abs/2512.24880
-- Engram, *Conditional Memory via Scalable Lookup*: https://arxiv.org/abs/2601.07372
-- DeepSeek-V2 (MLA): https://arxiv.org/abs/2405.04434
-- DeepSeek-V3 (MTP, aux-loss-free balancing, FP8 training): https://arxiv.org/abs/2412.19437
+- DeepSeek-V4: https://arxiv.org/html/2606.19348v1
+- DeepSeek-V4.1-Flash: https://arxiv.org/abs/2609.19969
+- Kimi K3 paper: https://arxiv.org/abs/2607.24653
+- Kimi K3 tech blog: https://www.kimi.ai/blog/kimi-k3
+- Raschka, K3 architecture notes: https://sebastianraschka.com/blog/2026/kimi-k3-architecture-notes.html
+- Attention Residuals: https://huggingface.co/papers/2603.15031
+- Qwen3.8-Flash-Next (Qwen4 preview): https://www.unite.ai/qwen3-8-flash-next-previews-qwen4-architecture-with-6b-active-parameters/
+- Qwen3.5 and the attention landscape: https://huggingface.co/blog/mlabonne/qwen35
+- Nemotron 3 Super (LatentMoE, shared MTP, NVFP4): https://arxiv.org/abs/2604.12374
+- MiniMax M3 (MSA): https://www.minimax.io/blog/minimax-m3
+- Raschka, LLM Architecture Gallery: https://sebastianraschka.com/llm-architecture-gallery/
+- Raschka, open-weight notes (Jul 2026): https://sebastianraschka.com/blog/2026/notable-open-weight-models-this-week.html
+- mHC: https://arxiv.org/abs/2512.24880
+- Engram: https://arxiv.org/abs/2601.07372
+- Dion3: https://arxiv.org/pdf/2608.11612
+- Speculative decoding in 2026 (EAGLE-3 / DFlash): https://dev.to/monuminu/speculative-decoding-in-2026-from-eagle-to-dflash-to-xpress-the-complete-engineers-playbook-3ald
+- Agentic RL in 2026: https://huggingface.co/blog/sergiopaniego/agentic-rl-2026
+- Diffusion LM status: https://kuleshov-group.github.io/blog/blog/2026/how-to-build-a-diffusion-language-model/
+- Agent harness anatomy: https://www.langchain.com/blog/the-anatomy-of-an-agent-harness
+- RAG state of the art: https://techwithcolonel.com/artifact/rag-state-of-the-art-2026.html
+- DeepSeek-V2 (MLA): https://arxiv.org/abs/2405.04434 · DeepSeek-V3 (MTP, FP8, aux-free): https://arxiv.org/abs/2412.19437
