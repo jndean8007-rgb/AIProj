@@ -57,8 +57,8 @@ def quantize_append_wrapper(
         vs,
         paged_kv_cache.k,
         paged_kv_cache.v,
-        paged_kv_cache.k_scale,
-        paged_kv_cache.v_scale,
+        paged_kv_cache.k_scales,
+        paged_kv_cache.v_scales,
 
         physical_blocks,
         block_offsets,
@@ -84,8 +84,8 @@ def quantize_append(
         block_offsets_ptr,
         head_dim,
         num_kv_heads,
+        cache_dtype,
 
-        CACHE_DTYPE: tl.constexpr,
         MAX_REP_CACHE_DTYPE: tl.constexpr,
         BLOCK_D: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
@@ -127,8 +127,8 @@ def quantize_append(
     tl.store(k_scale_ptr + kv_scale_pos, k_scale)
     tl.store(v_scale_ptr + kv_scale_pos, v_scale)
 
-    quantized_ks = tl.cast((k_tile / k_scale), dtype=CACHE_DTYPE.value,)
-    quantized_vs = tl.cast((v_tile / v_scale), dtype=CACHE_DTYPE.value,)
+    quantized_ks = tl.cast((k_tile / k_scale), dtype=cache_dtype)
+    quantized_vs = tl.cast((v_tile / v_scale), dtype=cache_dtype)
 
     tl.store(k_cache_ptr + kv_cache_pos, quantized_ks)
     tl.store(v_cache_ptr + kv_cache_pos, quantized_vs)

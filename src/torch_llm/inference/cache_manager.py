@@ -20,7 +20,8 @@ def initialize_cache(kvcache_config, model_config, device):
         PagedKVCache(
             kvcache_config.num_blocks, kvcache_config.block_size,
             model_config.num_kv_heads, model_config.head_dim, device,
-            dtype=kvcache_config.kv_cache_dtype,
+            cache_dtype=kvcache_config.kv_cache_dtype,
+            scale_dtype=kvcache_config.kv_scale_dtype,
         )
         for _ in range(model_config.num_layers)
     ]
