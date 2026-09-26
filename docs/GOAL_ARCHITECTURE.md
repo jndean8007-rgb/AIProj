@@ -1,17 +1,21 @@
-# Goal Architecture Proposal (v2)
+# Goal Architecture
 
-**Status: Proposed** (v2, 2026-09-26). Nothing here is agreed yet. When you accept an item (by its `G#` ID in §9), it moves into `docs/LLM_SYSTEM_HANDOFF.md` as **Agreed**.
+**Status: Agreed** (2026-09-26). All decisions G1–G16 in §10 were accepted. They're recorded in `docs/LLM_SYSTEM_HANDOFF.md` as D9 and D10. This is the target the project works towards. Changes to it go through the handoff doc: a new decision marks the old one **Superseded**.
 
-**What changed from v1.** v1 was DeepSeek-only. v2 was checked against every major open frontier architecture released through September 2026 (§2). It adds:
-- linear-attention hybrid layers (GDN → KDA)
+**History.** v1 was DeepSeek-only. v2 was checked against every major open frontier architecture released through September 2026 (§2). It added:
+- linear-attention hybrid layers
 - gated attention
-- a choice of residual design (Block AttnRes or mHC)
+- a pluggable residual
 - LatentMoE
-- Engram/n-gram memory, promoted from experimental to core
+- Engram
 - shared-weight MTP
-- NoPE on global layers
-- modern RL (DAPO/GSPO) and a full agent harness
-- **multi-GPU scaling designed in from the start** (§5.2)
+- NoPE global layers
+- modern RL and a full agent harness
+- multi-GPU scaling
+
+The final version adds two rules:
+- the **extensibility contract** (§4): code for earlier phases is never rewritten to integrate later ones
+- the **hardware-independent target** (principle 6): the architecture is never shaped by the developer's own GPU
 
 ---
 
@@ -79,7 +83,7 @@ flowchart TB
 
 ## 2. Landscape check: where the frontier actually is (September 2026)
 
-There is no single "most modern architecture". The top labs disagree on attention and on residuals. What *is* shared is a set of consensus trends, and v2 adopts all of them. At each contested point it picks one option and keeps the others pluggable.
+There is no single "most modern architecture". The top labs disagree on attention and on residuals. What *is* shared is a set of consensus trends, and this architecture adopts all of them. At each contested point it picks one option and keeps the others pluggable.
 
 | Component | DeepSeek V4 / V4.1 | Kimi K3 (Jul '26) | Qwen3.8-Flash-Next = Qwen4 preview (Aug '26) | Nemotron 3 | MiniMax M3 | **Our choice** |
 |---|---|---|---|---|---|---|
@@ -91,10 +95,10 @@ There is no single "most modern architecture". The top labs disagree on attentio
 | Lookup memory | Engram (paper) | — | **51B n-gram embeddings at layer 2** | — | — | **Engram at an early layer** |
 | MTP | MTP | — | multi-step MTP | **shared-weight, recursive** | — | **shared-weight recursive MTP** |
 | Optimizer | Muon | **Per-Head Muon** | — | — | — | **Muon + per-head + QK-clip; distributed Dion3-style** |
-| Precision | FP4 QAT experts; FP4 KV (V4.1) | MXFP4 QAT from SFT | — | **NVFP4 pretraining** | — | **BF16 → FP8 → FP4 (Blackwell)** |
+| Precision | FP4 QAT experts; FP4 KV (V4.1) | MXFP4 QAT from SFT | — | **NVFP4 pretraining** | — | **BF16 → FP8 → FP4 (dispatch-selected)** |
 | Modality | native multimodal (V4.1) | native vision | multimodal line | — | native multimodal | **interface reserved; Phase 8** |
 
-**What v2 deliberately does *not* adopt, and why:**
+**What is deliberately *not* adopted, and why:**
 - **Diffusion LMs as the main model.** Mercury 2, Gemma Diffusion and Nemotron Diffusion are now production-grade and fast. But every frontier *agentic* model above is autoregressive, and our whole engine is built for autoregressive decoding (KV and state caches, tool loops, RL). Block diffusion shows up here as a **DFlash-style speculative drafter** instead (Phase 8).
 - **Titans / test-time-training memory.** Still research-stage. None of the open frontier models above ships it.
 - **Looped or shared depth** (for example Nanbeige 4.2). This is a small-model parameter-saving trick, not a frontier trend.
@@ -106,25 +110,116 @@ There is no single "most modern architecture". The top labs disagree on attentio
 1. **Reference first.** Every fused or Triton kernel has a slow PyTorch reference, and a test compares the two. This is already the repo's practice.
 2. **Heterogeneous by design.** Each layer's mixer, FFN, residual and cache kind are declared as a `LayerSpec`. Contested choices (residual type, global-attention type, position encoding) are config switches, so they can be ablated rather than argued about.
 3. **The engine/API boundary is the seam.** The agent harness, RAG and evals talk only to the OpenAI-compatible API, so they can be built against any model.
-4. **Scale-agnostic code.** Every training component takes a `DeviceMesh` from the start. One GPU is simply a mesh of size 1 (§5.2).
+4. **Scale-agnostic code.** Every training component takes a `DeviceMesh` from the start. One GPU is simply a mesh of size 1 (§6.2).
 5. **Durable abstractions before fast paths.** The state manager covers KV, recurrent and lookup state from the start.
+6. **The target doesn't depend on hardware.** The architecture is chosen for what is modern and instructive, never for what fits a particular development GPU. Hardware only decides which *config size* and which *kernel implementation* runs on a given machine. It never decides which components exist. Any precision or kernel the machine can't run natively falls back to its reference or emulated path, and the model definition stays the same.
+7. **Extend, never rewrite.** See §4. Every later phase plugs into interfaces that exist from Phase 0.
 
 ---
 
-## 4. Target model
+## 4. Extensibility contract: extend, never rewrite
 
-### 4.1 `LayerSpec`
+**Goal:** each phase *adds* files, registry entries and config values. It never rewrites code from an earlier phase to make room. The interfaces below are created in Phase 0, and the current GQA/MoE code becomes their first implementation, with behavior unchanged. After that, GDN, KDA, MLA, DSA, CSA/HCA, LatentMoE, Engram, MTP, AttnRes/mHC and the distributed code all plug in rather than getting woven in.
+
+### 4.1 Rules
+
+1. **Code against interfaces, not concrete classes.** These `Protocol`s are defined once:
+
+   | Interface | Contract | First impl |
+   |---|---|---|
+   | `SequenceMixer` | `forward(x [T,D], meta: BatchMeta, state: LayerStateView \| None) -> [T,D]`; `state_specs(cfg) -> list[StateSpec]`; `capabilities: MixerCaps` | GQA |
+   | `FeedForward` | `forward(x [T,D], meta) -> (y [T,D], AuxOutputs)` | current MoE |
+   | `Residual` | `init(x0) -> RState`; `read(RState, i) -> x_in [T,D]`; `write(RState, i, y) -> RState`; `final(RState) -> [T,D]` | standard residual |
+   | `TokenMemory` | `forward(x [T,D], meta) -> x` (reads `meta.token_ids`) | none (identity) |
+   | `OutputHead` | `forward(h, meta) -> (logits, AuxOutputs)` | LM head (MTP added later) |
+
+   `MixerCaps` has these flags, so the engine and scheduler never special-case a mixer type:
+
+   | Flag | Meaning |
+   |---|---|
+   | `chunked_prefill` | can prefill in chunks |
+   | `prefix_snapshot` | supports prefix-cache snapshots |
+   | `rollback` | can roll back state (speculative decoding) |
+   | `context_parallel` | supports context parallelism |
+   | `needs_positions` | reads position indices |
+
+2. **One batch-metadata object instead of growing argument lists.** `BatchMeta` is a frozen dataclass holding:
+   - `token_ids`, `positions`, `cu_seqlens`, `max_seqlen`
+   - `mode` (`train | prefill | decode | verify`)
+   - `slot_ids`, `mesh`, and so on
+
+   New needs become **new fields with defaults**, so existing modules never change signature. (Today `Attention.forward` takes 8 positional parameters, and every new feature would add more.)
+
+3. **Modules never own or allocate cache or state.** Mixers declare `StateSpec`s, and the engine allocates. A mixer only sees a `LayerStateView` offering `read/append/update`. The manager API has its full shape from day one:
+
+   `reserve / commit / truncate / snapshot / restore / free`
+
+   That holds even while the first implementations of `truncate` and `snapshot` are trivial. Speculative decoding and prefix caching then need no API change.
+
+4. **Registries plus config-driven construction.** Components are registered by name, for example `MIXERS["kda"] = KDA`, `FFNS["latent_moe"] = LatentMoE`, `RESIDUALS["block_attnres"] = ...`. The model builder reads `ModelConfig.layers: list[LayerSpec]` (produced by a pattern helper such as `hybrid(unit=["kda"]*3 + ["global"], n=4)`) and never imports concrete classes. **Adding a component means a new file, one registry line, and a config value.**
+
+5. **Auxiliary outputs form an open channel.** `AuxOutputs(losses: dict[str, Tensor], metrics: dict[str, Any])` flows up from every module. The trainer sums losses using weights from config: MoE balance, MTP, indexer KL, and anything added later. (Today `model.py` assumes every block returns MoE stats with `aux_loss`, which breaks as soon as a dense or hash FFN appears.)
+
+6. **Kernel dispatch layer.** Each op (attention variants, delta rule, grouped GEMM, quantize, Newton–Schulz) has:
+   - a PyTorch **reference**
+   - zero or more fast implementations, selected at runtime by device capability and dtype
+
+   Precision and hardware are decided here and nowhere else (principle 6). Tests run every registered implementation against the reference.
+
+7. **Distributed-ready by construction.** Modules never call `torch.distributed` directly. Parameters carry sharding metadata (for example `expert_dim=0` on expert weights), and FSDP/EP/CP wrapping is a *policy function* applied to the built model over a `DeviceMesh`. Changing the parallelism layout changes that policy, not the modules.
+
+8. **Stable boundaries.** Three seams must stay fixed:
+   - **engine ↔ model:** `model(meta, states) -> (logits, aux)`
+   - **API ↔ engine:** OpenAI schema
+   - **harness ↔ API:** HTTP
+
+   Internal refactors can't leak across a seam.
+
+9. **Versioned configs and checkpoints.**
+   - Config dataclasses serialize to JSON with a `schema_version`, and unknown fields fail loudly.
+   - Checkpoints embed their config.
+   - Loaders migrate old versions forward, so an old checkpoint keeps loading after the model grows new optional components.
+
+10. **Contract tests per interface.** One generic suite is parametrized over each registry. Every mixer automatically gets these checks:
+    - shape
+    - **varlen boundary isolation** (no information leaks across `cu_seqlens`)
+    - prefill + decode equals full recompute
+    - chunked equals unchunked
+    - rollback and snapshot round-trips, when its caps claim them
+    - dtype and determinism
+
+    FFNs and residuals get the equivalent checks. A new component is "done" when it passes the generic suite plus its own specific tests.
+
+### 4.2 Current couplings the Phase 0 refactor removes
+
+| Where | Coupling today | Becomes |
+|---|---|---|
+| `model/attention.py` | branches on `mode`, calls `paged_kv_cache.append_kv` and the decode kernel directly | GQA `SequenceMixer`; cache access via `LayerStateView`; kernels via dispatch |
+| `model/decoder_block.py` | hardwires `Attention` + `MoE` + plain residual | generic block: `Residual.read → mixer → Residual.write → ffn`, all from registries |
+| `model/model.py` | assumes every block returns MoE stats with `aux_loss`; loops with a per-layer cache list | collects `AuxOutputs`; passes `BatchMeta` and state views |
+| `model/model_config.py` | flat, uniform-layer fields | global fields + `layers: list[LayerSpec]` + `schema_version` |
+| `inference/cache_manager.py` | single KV kind | `StateManager` over `StateSpec` pools with the full API from rule 3 |
+| `inference/paged_kv_cache.py` | one storage class, K/V layout baked in | one storage class per `StateSpec` kind |
+| training entry points | single-process assumptions | size-1 `DeviceMesh` + sharding policy hook |
+
+**Refactor exit test:** the whole existing suite passes unchanged, and greedy generation from the current checkpoint is token-identical before and after the refactor.
+
+---
+
+## 5. Target model
+
+### 5.1 `LayerSpec`
 
 - Structure: `LayerSpec(mixer: MixerSpec, ffn: FFNSpec)`, plus a global `ResidualSpec`.
   - `MixerSpec` is one of `GQA | MLA | DSA | CSA(m, k_sel, n_win) | HCA(m, n_win) | GDN | KDA`.
   - `FFNSpec` is one of `Dense | MoE | LatentMoE | HashMoE`.
-- **Invariant:** each mixer exposes `state_specs() -> list[StateSpec]` (§6.1). The engine never inspects mixer internals.
+- **Invariant:** each mixer exposes `state_specs() -> list[StateSpec]` (§7.1). The engine never inspects mixer internals.
 - **Default stack for a 16-layer model:**
   - units of `[KDA, KDA, KDA, Global]`, with Global alternating CSA and HCA once Phase 5 lands (MLA/DSA before that)
   - `HashMoE` in layer 0
   - Engram after layer 1
 
-### 4.2 Linear attention: Gated DeltaNet → KDA (new in v2)
+### 5.2 Linear attention: Gated DeltaNet → KDA
 
 This is the most important addition. Three of every four layers carry a **fixed-size recurrent state** instead of a growing KV cache.
 
@@ -141,7 +236,7 @@ This is the most important addition. Three of every four layers carry a **fixed-
   - **state resets at every `cu_seqlens` boundary** (packed varlen, D1)
   - prefill-then-decode equals a full recompute
 
-### 4.3 Global attention: the DeepSeek lineage (kept from v1, now gated)
+### 5.3 Global attention: the DeepSeek lineage
 
 These layers make up 1 in 4 of the stack. Each step builds on the previous one:
 
@@ -152,11 +247,11 @@ These layers make up 1 in 4 of the stack. Each step builds on the previous one:
    - **Visibility invariant:** every past token is visible through a completed compressed entry or the window, so `n_win ≥ m_max`. Tokens in a partial group live in a tail state.
 4. **Stretch:** V4.1-Flash CSA2 cross-layer index reuse and FP4 KV.
 
-Additions in v2:
+Also on every global layer:
 - **Output gating** on every softmax-attention layer: `o = softmax_attn(...) ⊙ σ(x W_g)`. It's cheap, and it removes the attention-sink and massive-activation pathologies.
 - **NoPE by default.** In a hybrid stack the KDA layers carry position, so global layers can drop RoPE (Kimi's choice). That also removes the YaRN context-extension step. Keep partial RoPE as a config switch for ablation.
 
-### 4.4 Residual: pluggable, with Block AttnRes as default (new in v2)
+### 5.4 Residual: pluggable, with Block AttnRes as default
 
 - `ResidualSpec = Standard | BlockAttnRes(num_blocks≈8) | mHC(n=4)`.
 - **Block AttnRes (Kimi):**
@@ -167,7 +262,7 @@ Additions in v2:
 - **Why AttnRes is the default:** it's the newer result, it's cheaper in memory (which matters on rented GPUs), and it's used by the newest frontier model (K3). mHC is implemented as the comparison. **Decision rule:** keep whichever wins the Phase 1 ablation at equal compute.
 - **Invariant:** both reduce to the standard residual in their degenerate configuration, and tests check that.
 
-### 4.5 LatentMoE v2 (evolves D3)
+### 5.5 LatentMoE v2 (evolves D3)
 
 - **LatentMoE:** tokens are projected `d → ℓ` (for example `ℓ = d/4`) before routed experts and back afterwards. At the same cost you can scale up both expert count and top-k by `d/ℓ`.
   - **All-to-all traffic under expert parallelism also shrinks by `d/ℓ`.** That's the key reason to choose it when you plan to rent multiple GPUs.
@@ -176,34 +271,35 @@ Additions in v2:
 - **Hash-routed MoE** in the first layer(s).
 - The existing grouped kernels carry over unchanged; they just run at width ℓ.
 
-### 4.6 Engram n-gram memory (promoted from experimental in v1)
+### 5.6 Engram n-gram memory
 
 - Hashed 2- and 3-gram embedding tables with multi-head hashing, a context-aware gate on the hidden state, and a residual add at an early layer.
 - **Why it's now core:** DeepSeek published it, and the Qwen4 preview ships 51B n-gram parameters at layer 2.
 - Lookups depend only on token IDs, so tables can live in host memory with prefetch. The engine treats them as a read-only state kind.
 
-### 4.7 Shared-weight recursive MTP
+### 5.7 Shared-weight recursive MTP
 
 - One MTP block (sharing the embedding and LM head) is trained at several offsets and applied recursively at inference to draft k tokens (Nemotron 3 reports an average acceptance length of 3.45).
 - **Packing invariant:** MTP targets never cross a `cu_seqlens` boundary.
 
-### 4.8 Precision
+### 5.8 Precision
 
-- **Path:** BF16, then FP8 blockwise (Ada/Hopper), then FP4.
-  - FP4 means NVFP4 or MXFP4, on Blackwell rentals.
+- **Path:** BF16, then FP8 blockwise, then FP4 (NVFP4 or MXFP4).
+  - Each is a kernel-level choice behind the dispatch layer (§4, rule 6), with BF16 as the reference.
+  - Hardware without native support runs emulated (fake-quant) paths. The model structure is the same in every case.
   - FP4 QAT for experts from the start of SFT (following V4 and K3).
 - Keep attention, latent projections, embeddings and the last ~15% of layers in BF16. That's Nemotron's recipe.
 
-### 4.9 Multimodal (reserved)
+### 5.9 Multimodal (reserved)
 
 - The token stream and chat template reserve image placeholder IDs, and `embed()` accepts pre-computed patch embeddings.
 - Native vision is Phase 8.
 
 ---
 
-## 5. Training system
+## 6. Training system
 
-### 5.1 Core
+### 6.1 Core
 
 - **Data:** deterministic, sharded, resumable streaming from pre-tokenized shards, with document packing (done).
 - **Tokenizer:** retrain the HF BPE at 64k vocab with reserved special tokens: roles, `<think>`, tool-call and tool-result tokens, image placeholders, and spares.
@@ -213,7 +309,7 @@ Additions in v2:
   - Then **agentic RL in sandboxes**, with multi-turn rollouts and outcome rewards.
   - Optionally, domain-expert RL runs merged via on-policy distillation (V4's recipe).
 
-### 5.2 Multi-GPU scaling (new in v2, answering your point 1)
+### 6.2 Multi-GPU scaling
 
 - **One `DeviceMesh`, four dimensions:** `dp_replicate × dp_shard × ep × cp`. A local GPU is `1×1×1×1`. Tensor and pipeline parallelism are deferred because they aren't needed below roughly 30B total parameters. torchtitan is the reference design.
   - **FSDP2** (`fully_shard`) for parameters, gradients and optimizer state.
@@ -231,7 +327,7 @@ Additions in v2:
 
   | Tier | Hardware | Model (total / active) | Tokens | Purpose |
   |---|---|---|---|---|
-  | S | your GPU | ~0.1–0.5B / ~50–150M | 1–10B | development, ablations |
+  | S | local dev GPU | ~0.1–0.5B / ~50–150M | 1–10B | development, ablations |
   | M | 1 rented 8×H100/H200/B200 node | ~3–8B / ~0.5–1B | 50–200B | first real model |
   | L | multi-node | as budget allows | — | code supports it; the budget decides |
 
@@ -243,9 +339,9 @@ Additions in v2:
 
 ---
 
-## 6. Inference engine (evolves D5–D8)
+## 7. Inference engine (evolves D5–D8)
 
-### 6.1 Unified state manager
+### 7.1 Unified state manager
 
 This generalizes `KVCacheManager` into one owner for every per-request state kind:
 
@@ -263,13 +359,13 @@ Invariants and ownership:
 - Page size in tokens is a multiple of the largest compression ratio *and* of the KDA chunk size.
 - Ownership stays as in D5: the manager is CPU-authoritative with a device mirror, and storage only validates.
 
-### 6.2 Prefix caching
+### 7.2 Prefix caching
 
 - Chained block hashes, ref-counted pages, and LRU eviction across GPU, pinned host memory and SSD tiers.
 - **Recurrent layers can't be sliced by prefix.** So the engine stores **state snapshots at page boundaries** for cached prefixes, the approach Kimi contributed to vLLM for KDA.
 - **Invariant:** resuming from a snapshot gives the same result as a full prefill.
 
-### 6.3 Scheduler and decoding
+### 7.3 Scheduler and decoding
 
 - A token-budget scheduler that mixes chunked prefill with decode, with incremental page growth and **preemption**. It replaces D6's full-lifetime reservation.
 - **Speculative decoding** with recursive MTP drafts and rejection-sampling verification.
@@ -281,7 +377,7 @@ Invariants and ownership:
 
 ---
 
-## 7. Serving, agent harness, deployment, evaluation
+## 8. Serving, agent harness, deployment, evaluation
 
 - **Serving:** FastAPI async front end, with the engine loop on its own thread (D6).
   - Endpoints: `/v1/chat/completions` (SSE, `tools`, `response_format`), `/v1/models`, `/health`, `/metrics`.
@@ -306,17 +402,21 @@ Invariants and ownership:
 
 ---
 
-## 8. Roadmap
+## 9. Roadmap
 
 Each phase has exit criteria.
 
-**Phase 0: Stabilize**
-- Finish D8 FP8 KV and fix the broken imports and tests. Add CPU CI.
-- Thread `DeviceMesh` through the training entry points (size-1 mesh, no behavior change).
-- *Exit:* all tests green, and FP8 decode matches BF16 within tolerance.
+**Phase 0: Stabilize and lay the extension points**
+- **0a.** Finish D8 FP8 KV and fix the broken imports and tests. Add CPU CI.
+  - *Exit:* all tests green, and FP8 decode matches BF16 within tolerance.
+- **0b. Extensibility refactor (§4), behavior-preserving.**
+  - `BatchMeta`, the `SequenceMixer`/`FeedForward`/`Residual`/`TokenMemory`/`OutputHead` protocols, registries, `LayerSpec` config with `schema_version`, and `AuxOutputs`.
+  - A `StateManager` with the full `reserve/commit/truncate/snapshot/restore/free` API, where GQA KV is the first `StateSpec`.
+  - The kernel dispatch layer, the size-1 `DeviceMesh` plus sharding-policy hook, and the generic contract-test suites.
+  - *Exit:* the existing suite passes unchanged, and greedy generation is token-identical before and after.
 
 **Phase 1: Model core I**
-- `LayerSpec` refactor, QK-norm, gated attention, **MLA**, **LatentMoE v2**, and **residual interface with Block AttnRes and mHC**.
+- QK-norm, gated attention, **MLA**, **LatentMoE**, **Block AttnRes** and **mHC**. Each is added as a registered component; nothing from Phase 0 is rewritten.
 - Tier-S ablations: each feature against the current baseline, and AttnRes against mHC.
 - *Exit:* reference-vs-kernel tests pass, and there's an ablation table.
 
@@ -351,13 +451,13 @@ Each phase has exit criteria.
 - *Exit:* a public HTTPS endpoint and a load-test report.
 
 **Phase 8: Frontier stretch**
-- Native vision, a DFlash-style block-diffusion drafter, NVFP4 pretraining on Blackwell, disaggregated serving, and V4.1's causal encoder–decoder split.
+- Native vision, a DFlash-style block-diffusion drafter, NVFP4 pretraining at scale, disaggregated serving, and V4.1's causal encoder–decoder split.
 
 ---
 
-## 9. Decisions to accept
+## 10. Decisions (all Agreed 2026-09-26)
 
-| ID | Proposal |
+| ID | Decision |
 |---|---|
 | G1 | Hybrid stack: KDA linear layers, 3:1 with gated global attention; global follows DeepSeek MLA → DSA → CSA/HCA |
 | G2 | `LayerSpec` / `StateSpec` / `ResidualSpec` as the organizing abstractions |
@@ -369,16 +469,17 @@ Each phase has exit criteria.
 | G8 | Muon family: per-head Muon, QK-clip, distributed Dion3-style implementation |
 | G9 | DeviceMesh from Phase 0; FSDP2 + EP + CP; reshardable DCP; scale tiers S/M/L |
 | G10 | Unified state manager (KV + recurrent + lookup), prefix cache with state snapshots, preemptive token-budget scheduler |
-| G11 | Precision: BF16 → FP8 → FP4 (Blackwell); FP4 QAT from SFT |
+| G11 | Precision: BF16 → FP8 → FP4 as dispatch-layer kernel choices with emulated fallbacks; FP4 QAT from SFT |
 | G12 | Post-training: DAPO/GSPO on verifiable rewards, then sandboxed agentic RL |
 | G13 | Agent harness (MCP, sandbox code exec, compaction, skills, memory, subagents) + agentic hybrid/late-interaction RAG behind an OpenAI-compatible API |
-| G14 | Roadmap Phases 0–8 as in §8; autoregressive (not diffusion) main model |
+| G14 | Roadmap Phases 0–8 as in §9; autoregressive (not diffusion) main model |
+| G15 | Extensibility contract (§4): interfaces, `BatchMeta`, registries, engine-owned state, open `AuxOutputs`, kernel dispatch, sharding policies, stable seams, versioned configs, generic contract tests; built in Phase 0b |
+| G16 | Hardware-independent target: development hardware never shapes the architecture, only config size and kernel choice |
 
-## 10. Open questions (facts only you have)
+## 11. Open questions (non-blocking)
 
-1. **Your local GPU model and VRAM.** This sets Tier S and whether FP8 is real locally.
-2. **Rough rental budget per training run.** For example: under $500, under $2k, or more. This sets the Tier-M model size.
-3. **Deployment audience:** just you, a small group, or public.
+1. **Rough rental budget per training run.** Only sets the Tier-M config size; the architecture is the same either way. Needed before Phase 3.
+2. **Deployment audience:** just you, a small group, or public. Sets auth, cost ceiling and cloud choice. Needed before Phase 7.
 
 ---
 

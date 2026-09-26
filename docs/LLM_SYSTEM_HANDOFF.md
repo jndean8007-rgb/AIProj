@@ -12,8 +12,8 @@ Muon) and a working inference runtime (paged KV cache, continuous batching,
 split-K paged decode kernel) as of `930c75a`. Active work (`a2bf43d`, `379a99a`):
 FP8 KV-cache quantization, steps 1–2 of the plan in `todo` begun; the tree is
 mid-change and the inference path is currently broken (see Open questions).
-Roadmap after this: distributed training/inference → speculative decoding →
-expert parallelism → experimental architectures.
+Roadmap: see D9 / `docs/GOAL_ARCHITECTURE.md` §9. Next: Phase 0a (finish D8),
+then Phase 0b (extensibility refactor, D10).
 
 ## Decisions
 
@@ -26,8 +26,9 @@ expert parallelism → experimental architectures.
 | D5 | Paged KV cache: per-layer `PagedKVCache` storage `[num_blocks, block_size, H_kv, D]`; allocation, block tables, and lengths owned by a single `KVCacheManager` (CPU-authoritative, device mirror). Storage validates only; bounds/ownership resolved once per batch by the manager. | Implemented | pre-2026-09-26 | `inference/paged_kv_cache.py`, `inference/cache_manager.py` |
 | D6 | Continuous batching: `submit`/`step`/`generate`, FIFO admission reserving full lifetime cache capacity up front; prefill and decode are distinct batch types. No preemption/eviction/chunked prefill. | Implemented | pre-2026-09-26 | `inference/runtime.py`, `continuous_batch_scheduler.py`, `inference/README.md` |
 | D7 | Decode attention: split-K (flash-decoding) Triton kernel reading paged K/V via the full block table indexed by cache slot. | Implemented | pre-2026-09-26 | `kernals/decode_attention.py` |
-| D9 | Goal architecture v2 and phased roadmap: KDA/global 3:1 hybrid (global = MLA → DSA → CSA/HCA), pluggable residual (Block AttnRes / mHC), LatentMoE, Engram, shared-weight MTP, DeviceMesh multi-GPU scaling, unified state manager, OpenAI-compatible serving, agent harness + agentic RAG. Items G1–G14 become Agreed as accepted. | Proposed | 2026-09-26 | `docs/GOAL_ARCHITECTURE.md` |
 | D8 | KV-cache quantization: FP8 e4m3 storage, FP32 scale per (token, KV head) (`scale_granularity="token_head"`), scales stored `[num_blocks, block_size, H_kv]`. Prefill attends over unquantized K/V; only cache writes are quantized. Decode dequantizes inside the paged kernel. | Agreed (in progress) | 2026-09-25 | Plan in `todo`. Storage + append kernel begun: `paged_kv_cache.py`, `kernals/kv_cache/quantized_append.py`. Decode-side dequant not started. |
+| D9 | Goal architecture (G1–G14): KDA/global 3:1 hybrid (global = MLA → DSA → CSA/HCA, gated, NoPE), pluggable residual (Block AttnRes default / mHC), LatentMoE + shared + hash-early, Engram, shared-weight MTP, Muon family, DeviceMesh FSDP2+EP+CP, unified state manager, OpenAI-compatible serving, agent harness + agentic RAG, roadmap Phases 0–8. | Agreed | 2026-09-26 | `docs/GOAL_ARCHITECTURE.md` §5–§9. Supersedes the informal roadmap in `todo`. |
+| D10 | Extensibility contract (G15) + hardware-independent target (G16): code against `SequenceMixer`/`FeedForward`/`Residual`/`TokenMemory`/`OutputHead` protocols; `BatchMeta`; registries + `LayerSpec` config; engine-owned state via `StateSpec` with reserve/commit/truncate/snapshot/restore/free; open `AuxOutputs`; kernel dispatch with references; sharding as policy; versioned configs; generic contract tests. Dev hardware never shapes the architecture. | Agreed | 2026-09-26 | `docs/GOAL_ARCHITECTURE.md` §3–§4. Built in Phase 0b (behavior-preserving refactor). |
 
 ## Open questions
 
