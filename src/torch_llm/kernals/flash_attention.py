@@ -217,7 +217,7 @@ def flash_attention_backward(q,
                              cum_seq,
                              grad_output,
                              batch_max_seq_len,
-                             scale): # ------------------ time to work on this to make work for ragged prompts. not very hard, so dont worry.
+                             scale):
     delta = flash_attention_backward_preprocess_wrapper(output, grad_output, cum_seq, batch_max_seq_len)
     T, qh, d = q.shape
     kvh = k.shape[-2]

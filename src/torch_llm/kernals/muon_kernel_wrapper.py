@@ -1,11 +1,8 @@
 import torch as t
 import triton
-import triton.language as tl
-import math
 from jaxtyping import Shaped
-from torch import device
 
-from kernals.muon.frobenius_norm import frobenius_norm_partial_sum_kernal, frobenius_norm_normalize_kernal
+from torch_llm.kernals.muon.frobenius_norm import frobenius_norm_partial_sum_kernal, frobenius_norm_normalize_kernal
 from torch_llm.kernals.muon.iterative_approx import ns_x_xtrans_kernel, ns_a_x_kernel, ns_a_y_kernel, \
     ns_x_resolve_kernel
 import time

@@ -41,6 +41,9 @@ def decode_attention_wrapper(
     paged_kv_cache,
     cache_batch_context
 ):
+    if paged_kv_cache.quantized:
+        raise NotImplementedError("FP8 decode not implemented yet (D8 step 4)")
+
     b, hq, d = q.shape
 
     k_cache = paged_kv_cache.k

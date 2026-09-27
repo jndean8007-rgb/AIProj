@@ -42,6 +42,7 @@ def quantize_append_wrapper(
     assert ks.shape == vs.shape
     assert paged_kv_cache.k.shape == paged_kv_cache.v.shape
     assert ks.shape[-2:] == paged_kv_cache.k.shape[-2:]
+    ks, vs = ks.contiguous(), vs.contiguous()
 
     num_blocks, block_size, num_kv_heads, head_dim = paged_kv_cache.k.shape
     num_tokens = ks.shape[0]
@@ -65,7 +66,6 @@ def quantize_append_wrapper(
         head_dim,
         num_kv_heads,
 
-        cache_dtype,
         max_rep_cache_dtype,
         block_d,
         block_size,
@@ -85,12 +85,10 @@ def quantize_append(
         head_dim,
         num_kv_heads,
 
-        CACHE_DTYPE: tl.constexpr,  #idek at this point
-
-        MAX_REP_CACHE_DTYPE: tl.constexpr,
+        MAX: tl.constexpr,
         BLOCK_D: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
-): # each kernel launch owns ONE token, ONE head.
+):
 
     global_token_id = tl.program_id(0)
     kv_head_id = tl.program_id(1)
@@ -103,14 +101,14 @@ def quantize_append(
 
 
     kv_pos = (global_token_id * num_kv_heads + kv_head_id) * head_dim + head_offsets
-    kv_cache_pos = ((physical_block * BLOCK_SIZE + block_offset) * num_kv_heads + kv_head_id) * head_dim + head_offsets
-    kv_scale_pos = ((physical_block * BLOCK_SIZE + block_offset) * num_kv_heads + kv_head_id)
+    kv_cache_pos = ((physical_block.to(tl.int64) * BLOCK_SIZE + block_offset) * num_kv_heads + kv_head_id) * head_dim + head_offsets
+    kv_scale_pos = ((physical_block.to(tl.int64) * BLOCK_SIZE + block_offset) * num_kv_heads + kv_head_id)
 
     k_tile = tl.load(
         k_ptr + kv_pos,
         mask=head_mask,
         other=0.0,
-    )
+    ).to(tl.float32)
 
     k_max = tl.max(tl.abs(k_tile), axis=-1)
 
@@ -118,21 +116,21 @@ def quantize_append(
         v_ptr + kv_pos,
         mask=head_mask,
         other=0.0,
-    )
+    ).to(tl.float32)
 
     v_max = tl.max(tl.abs(v_tile), axis=-1)
 
-    k_scale = tl.where(k_max > 0, k_max / MAX_REP_CACHE_DTYPE, 1.0)
-    v_scale = tl.where(v_max > 0, v_max / MAX_REP_CACHE_DTYPE, 1.0)
+    k_scale = tl.where(k_max > 0, k_max / MAX, 1.0)
+    v_scale = tl.where(v_max > 0, v_max / MAX, 1.0)
 
     tl.store(k_scale_ptr + kv_scale_pos, k_scale)
     tl.store(v_scale_ptr + kv_scale_pos, v_scale)
 
-    quantized_ks = tl.cast((k_tile / k_scale), dtype=cache_dtype)
-    quantized_vs = tl.cast((v_tile / v_scale), dtype=cache_dtype)
+    quantized_ks = tl.clamp(k_tile / k_scale, -MAX, MAX).to(k_cache_ptr.dtype.element_ty)
+    quantized_vs = tl.clamp(v_tile / v_scale, -MAX, MAX).to(k_cache_ptr.dtype.element_ty)
 
-    tl.store(k_cache_ptr + kv_cache_pos, quantized_ks)
-    tl.store(v_cache_ptr + kv_cache_pos, quantized_vs)
+    tl.store(k_cache_ptr + kv_cache_pos, quantized_ks, mask=head_mask)
+    tl.store(v_cache_ptr + kv_cache_pos, quantized_vs, mask=head_mask)
 
 
 
