@@ -361,7 +361,8 @@ def decode_attention_split_kernel(
             axis=1
         )
 
-        s_tile = tl.where(QUANTIZED, s_tile * k_scale, s_tile)
+        if QUANTIZED:
+            s_tile = s_tile * k_scale
 
         s_tile = tl.where(
             token_mask,
@@ -386,8 +387,10 @@ def decode_attention_split_kernel(
         p = tl.exp(
             s_tile - new_max
         )
+        pv = p
 
-        pv = tl.where(QUANTIZED, p * v_scale, p)
+        if QUANTIZED:
+            pv = p * v_scale
 
         partial_sum = (
             alpha * partial_sum
