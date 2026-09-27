@@ -41,13 +41,19 @@ def decode_attention_wrapper(
     paged_kv_cache,
     cache_batch_context
 ):
-    if paged_kv_cache.quantized:
-        raise NotImplementedError("FP8 decode not implemented yet (D8 step 4)")
-
     b, hq, d = q.shape
 
     k_cache = paged_kv_cache.k
     v_cache = paged_kv_cache.v
+
+    quantized = paged_kv_cache.quantized
+
+    if not quantized:
+        k_scales = t.empty(k_cache.shape[:-1], device=k_cache.device)
+        v_scales = t.empty_like(k_scales)
+    else:
+        k_scales = paged_kv_cache.k_scales
+        v_scales = paged_kv_cache.v_scales
 
     assert k_cache.shape == v_cache.shape
     assert k_cache.ndim == 4
@@ -141,6 +147,8 @@ def decode_attention_wrapper(
         q,
         k_cache,
         v_cache,
+        k_scales,
+        v_scales,
 
         partial_max,
         partial_sum,
@@ -158,6 +166,7 @@ def decode_attention_wrapper(
         HKV=hkv,
         SM_SCALE=SM_SCALE,
 
+        QUANTIZED=quantized,
         BLOCK_SIZE=BLOCK_SIZE,
         BLOCKS_PER_SPLIT=BLOCKS_PER_SPLIT,
         BLOCK_TABLE_WIDTH=block_table_width,
@@ -187,6 +196,8 @@ def decode_attention_split_kernel(
     q_ptr,
     k_cache_ptr,
     v_cache_ptr,
+    k_scales_ptr,
+    v_scales_ptr,
 
     partial_max_ptr,
     partial_sum_ptr,
@@ -204,6 +215,7 @@ def decode_attention_split_kernel(
     HKV: tl.constexpr,
     SM_SCALE: tl.constexpr,
 
+    QUANTIZED: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     BLOCKS_PER_SPLIT: tl.constexpr,
     BLOCK_TABLE_WIDTH: tl.constexpr,
@@ -263,6 +275,8 @@ def decode_attention_split_kernel(
 
     token_offsets = tl.arange(0, BLOCK_SIZE)
 
+
+
     # Each iteration handles ONE physical KV-cache block.
     #
     # This is important for a paged cache: adjacent logical
@@ -304,6 +318,12 @@ def decode_attention_split_kernel(
         #
         # [physical_block, token, kv_head, head_dim]
         #
+
+        if QUANTIZED:
+            scale_base = (physical_block * BLOCK_SIZE + token_offsets) * HKV + kv_head_id
+            k_scale = tl.load(k_scales_ptr + scale_base, mask=token_mask, other=0.0)
+            v_scale = tl.load(v_scales_ptr + scale_base, mask=token_mask, other=0.0)
+
         kv_pos = (
             (
                 (
@@ -341,6 +361,8 @@ def decode_attention_split_kernel(
             axis=1
         )
 
+        s_tile = tl.where(QUANTIZED, s_tile * k_scale, s_tile)
+
         s_tile = tl.where(
             token_mask,
             s_tile,
@@ -365,6 +387,8 @@ def decode_attention_split_kernel(
             s_tile - new_max
         )
 
+        pv = tl.where(QUANTIZED, p * v_scale, p)
+
         partial_sum = (
             alpha * partial_sum
             + tl.sum(p, axis=0)
@@ -373,7 +397,7 @@ def decode_attention_split_kernel(
         partial_accum = (
             alpha * partial_accum
             + tl.sum(
-                p[:, None] * v_tile,
+                pv[:, None] * v_tile,
                 axis=0
             )
         )

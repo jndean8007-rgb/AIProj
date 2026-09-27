@@ -1,6 +1,11 @@
 import torch as t
 
-from torch_llm.training.optim.muon import zeropower_via_newton_schulz, Muon
+from torch_llm.training.optim.muon import Muon, muon_ns_step_process
+
+
+def zeropower_via_newton_schulz(B: t.Tensor, steps: int) -> t.Tensor:
+    """Orthogonalize one matrix (or an expert stack) through Muon's Triton Newton-Schulz path."""
+    return muon_ns_step_process([B], steps)[0]
 
 
 def exact_polar_factor(B: t.Tensor) -> t.Tensor:
@@ -208,3 +213,27 @@ def test_muon_step_updates_parameter():
 
     assert momentum.shape == W.shape
     assert t.isfinite(momentum).all()
+
+
+def test_newton_schulz_tall_equals_transpose_of_wide():
+    # Exact property of the polar factor: polar(B.T) == polar(B).T. Muon runs every
+    # matrix in wide orientation, so a tall matrix and the transpose of its wide
+    # counterpart go through identical arithmetic and must match to float precision.
+    # (The SVD comparisons above need a loose tolerance because 5 NS steps are
+    # approximate; this check doesn't, so it catches layout bugs they can miss.)
+    # Tall matrices are real: expert gate/up weights are [E, d_ff, d_model], d_ff > d_model.
+    t.manual_seed(5)
+
+    wide = t.randn(64, 128, device="cuda", dtype=t.float32)
+    t.testing.assert_close(
+        zeropower_via_newton_schulz(wide.t().contiguous(), steps=5),
+        zeropower_via_newton_schulz(wide, steps=5).t(),
+        atol=1e-3, rtol=1e-3,
+    )
+
+    wide_experts = t.randn(4, 64, 128, device="cuda", dtype=t.float32)
+    t.testing.assert_close(
+        zeropower_via_newton_schulz(wide_experts.transpose(-1, -2).contiguous(), steps=5),
+        zeropower_via_newton_schulz(wide_experts, steps=5).transpose(-1, -2),
+        atol=1e-3, rtol=1e-3,
+    )

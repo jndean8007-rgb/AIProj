@@ -1,11 +1,14 @@
-from torch_llm.model.rmsnorm import RMSNorm
+import pytest
 import torch as t
 
+from torch_llm.model.rmsnorm import RMSNorm
 
 
+@pytest.mark.skipif(not t.cuda.is_available(), reason="RMSNorm is a Triton kernel and requires CUDA")
 def test_norm():
-    x = t.randn((3, 4, 5), requires_grad=True)
-    rms = RMSNorm(x.size(dim=-1))
+    # Activations are packed [T, d_model] (handoff D1), so RMSNorm takes 2D input.
+    x = t.randn((12, 5), device="cuda", requires_grad=True)
+    rms = RMSNorm(x.size(dim=-1)).cuda()
     output = rms(x)
     loss = output.sum()
     loss.backward()

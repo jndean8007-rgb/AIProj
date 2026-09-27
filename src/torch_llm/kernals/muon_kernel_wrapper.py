@@ -52,14 +52,6 @@ def muon_ns_kernal_wrapper(
     M = t.minimum(rows, cols)
     K = t.maximum(rows, cols)
 
-    # min/max changes shape, so tall matrices need an actual transpose
-    start = 0
-    for r, c in original_shapes:
-        end = start + r * c
-        if r > c and r * c:
-            matrix = current_buffer[start:end].view(r, c)
-            current_buffer[start:end].copy_(matrix.t().contiguous().view(-1))
-        start = end
 
     # 1 frobenius norm partial sum entry. NOT SQUARE ROOTED.
     ELEMENTS_PER_WORKER = 102400  # total elements per worker
@@ -340,14 +332,6 @@ def muon_ns_kernal_wrapper(
     #t77 = time.perf_counter()
     #print(f"[ns_steps all iterations] {t77 - t7:.4f}s")
     # ------------------ BENCHMARK -------------------
-
-    start = 0
-    for r, c in original_shapes:
-        end = start + r * c
-        if r > c and r * c:
-            matrix = current_buffer[start:end].view(c, r)
-            current_buffer[start:end].copy_(matrix.t().contiguous().view(-1))
-        start = end
 
     return current_buffer
 

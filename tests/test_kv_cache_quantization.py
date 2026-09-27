@@ -6,8 +6,15 @@ What is covered:
      code: the production cache has no CPU FP8 path.
   B. KVCacheConfig validation (D11, D12).
   C. PagedKVCache storage contract: unquantized vs quantized layout (D11).
-  D. Decode refuses an FP8 cache until the decode kernel applies scales (D8 step 4).
   E. The Triton FP8 append kernel against the reference (CUDA, sm89+ only).
+  F. FP8 paged decode (D8 step 4; CUDA, sm89+ only):
+     - exact: the kernel computes attention over the *dequantized* cache
+       (tight tolerance: only float32 summation order differs);
+     - close: FP8 decode stays near BF16 decode on the same K/V
+       (loose tolerance: this is the quantization error itself);
+     - stale cache contents (NaN) outside a sequence never leak into outputs.
+  G. End to end (D8 step 5): the Attention module and the full runtime with an
+     FP8 cache track the BF16 cache.
 
 Quantization contract (per token, per KV head, over head_dim D):
     amax  = max |x|                       (computed in float32)
@@ -24,7 +31,7 @@ e4m3 keeps 3 mantissa bits, so round-to-nearest is off by at most half a step,
 subnormal range (step 2**-9 there, so half a step is 2**-10; 2**-9 gives slack).
 
 Production imports happen inside the tests on purpose, so that sections A and B
-still run while `paged_kv_cache.py` fails to import.
+still run if a production module fails to import.
 """
 
 import math
@@ -232,22 +239,6 @@ def test_unquantized_append_writes_only_targeted_slots(dtype):
 
 
 # ---------------------------------------------------------------------------
-# D. Decode must refuse an FP8 cache until it applies scales (CPU)
-# ---------------------------------------------------------------------------
-
-def test_decode_rejects_quantized_cache_until_implemented():
-    # Reading FP8 codes without their scales gives plausible-looking garbage,
-    # so the wrapper must raise before touching the batch context or launching.
-    from torch_llm.inference.paged_kv_cache import PagedKVCache
-    from torch_llm.kernals.decode_attention import decode_attention_wrapper
-
-    cache = PagedKVCache(2, 4, 2, 16, "cpu", FP8)
-    q = t.randn(1, 4, 16)
-    with pytest.raises(NotImplementedError):
-        decode_attention_wrapper(q, cache, None)
-
-
-# ---------------------------------------------------------------------------
 # E. Triton FP8 append kernel vs reference (CUDA sm89+)
 # ---------------------------------------------------------------------------
 
@@ -397,3 +388,264 @@ def test_fp8_append_through_cache_manager_round_trips():
     _, v_scales = reference_quantize(vs)
     assert ((ks.float() - k).abs() <= 2 * error_bound(ks, k_scales)).all()
     assert ((vs.float() - v).abs() <= 2 * error_bound(vs, v_scales)).all()
+
+
+# ---------------------------------------------------------------------------
+# F. FP8 paged decode (CUDA sm89+)
+# ---------------------------------------------------------------------------
+
+def fill_decode_batch(caches, lengths, num_kv_heads, head_dim, block_size, kv_dtype, seed):
+    """Write one K/V history per request into every cache in `caches` (all share one manager).
+
+    Mirrors the runtime at decode time: each request's last position is the token
+    being decoded, already written, so context_length == length.
+    Returns (manager, context, keys, values) with keys/values as written: lists of [L, H_kv, D].
+    """
+    from torch_llm.inference.cache_manager import KVCacheManager
+
+    generator = t.Generator(device="cuda").manual_seed(seed)
+    num_blocks = sum(-(-length // block_size) for length in lengths) + 4
+    manager = KVCacheManager(num_blocks, block_size, len(lengths) + 1, max(lengths) + block_size, "cuda")
+    slots, keys, values = [], [], []
+    for request_id, length in enumerate(lengths):
+        slots.append(manager.allocate_request(request_id, length))
+        k = t.randn(length, num_kv_heads, head_dim, device="cuda", generator=generator).to(kv_dtype)
+        v = t.randn(length, num_kv_heads, head_dim, device="cuda", generator=generator).to(kv_dtype)
+        for cache in caches:
+            manager.append_request(request_id, t.arange(length, device="cuda"), k, v, cache)
+        manager.advance(request_id, length - 1)
+        keys.append(k)
+        values.append(v)
+    context = manager.create_container(
+        t.tensor(slots, device="cuda"),
+        t.arange(len(lengths) + 1, dtype=t.int32, device="cuda"),
+        t.tensor(lengths, device="cuda") - 1,
+    )
+    return manager, context, keys, values
+
+
+def cache_history(cache, manager, slot, length):
+    """What the cache holds for one sequence, as float64 [L, H_kv, D] (dequantized if FP8)."""
+    positions = t.arange(length, device=cache.k.device)
+    blocks = manager.block_table[slot, positions // cache.block_size]
+    offsets = positions % cache.block_size
+    k, v = cache.k[blocks, offsets].double(), cache.v[blocks, offsets].double()
+    if cache.quantized:
+        k = k * cache.k_scales[blocks, offsets].double().unsqueeze(-1)
+        v = v * cache.v_scales[blocks, offsets].double().unsqueeze(-1)
+    return k, v
+
+
+def reference_decode(q, k, v):
+    """One decode step. q [H_q, D]; k, v [L, H_kv, D]; float64 math -> [H_q, D]."""
+    group = q.shape[0] // k.shape[1]
+    k = k.transpose(0, 1).repeat_interleave(group, 0)  # [H_q, L, D]
+    v = v.transpose(0, 1).repeat_interleave(group, 0)
+    scores = (q.double().unsqueeze(1) @ k.transpose(-1, -2)).squeeze(1) / math.sqrt(q.shape[-1])
+    return (scores.softmax(-1).unsqueeze(1) @ v).squeeze(1)
+
+
+# Lengths cover: a single token, a partial block, exactly one block, exactly one
+# split (4 blocks of 16 = 64 tokens), one past a split, and several splits.
+DECODE_LENGTHS = [1, 3, 16, 64, 65, 141, 300]
+OUTPUT_TOLERANCE = {t.float32: 1e-4, t.float16: 2e-3, t.bfloat16: 1.6e-2}
+
+
+@requires_fp8_cuda
+@t.inference_mode()
+@pytest.mark.parametrize("q_dtype", [t.float32, t.float16, t.bfloat16])
+@pytest.mark.parametrize("head_dim", [16, 80, 128])
+@pytest.mark.parametrize("num_q_heads,num_kv_heads", [(8, 2), (4, 4)])
+def test_fp8_decode_matches_attention_over_dequantized_cache(q_dtype, head_dim, num_q_heads, num_kv_heads):
+    # The kernel must compute exactly softmax(q . k_hat) @ v_hat, where k_hat, v_hat
+    # are the dequantized cache values. Any scale bug (missing, applied to the
+    # softmax denominator, wrong token/head) shows up here far above tolerance.
+    from torch_llm.inference.paged_kv_cache import PagedKVCache
+    from torch_llm.kernals.decode_attention import decode_attention_wrapper
+
+    block_size = 16
+    cache = PagedKVCache(64, block_size, num_kv_heads, head_dim, "cuda", FP8)
+    manager, context, _, _ = fill_decode_batch([cache], DECODE_LENGTHS, num_kv_heads, head_dim, block_size, t.bfloat16, seed=6)
+    q = t.randn(len(DECODE_LENGTHS), num_q_heads, head_dim, device="cuda").to(q_dtype)
+
+    actual = decode_attention_wrapper(q, cache, context)
+
+    assert actual.shape == q.shape and actual.dtype == q_dtype
+    expected = t.stack([
+        reference_decode(q[row], *cache_history(cache, manager, int(context.cache_slots[row]), length))
+        for row, length in enumerate(DECODE_LENGTHS)
+    ])
+    tolerance = OUTPUT_TOLERANCE[q_dtype]
+    t.testing.assert_close(actual.double(), expected, rtol=tolerance, atol=tolerance)
+
+
+@requires_fp8_cuda
+@t.inference_mode()
+@pytest.mark.parametrize("head_dim", [16, 128])
+def test_fp8_decode_close_to_bf16_decode(head_dim):
+    # Same K/V written to a BF16 cache and an FP8 cache. The difference is the
+    # quantization error. Tolerance: in 300 simulated cases (q ~ N(0, 1), lengths
+    # 1-400, with and without an outlier K channel) the worst max-abs difference was
+    # 3.6% of max|v|; 6% leaves margin without hiding real bugs (a missing V scale
+    # is off by ~450x, a scale on the denominator by far more than 6%).
+    from torch_llm.inference.paged_kv_cache import PagedKVCache
+    from torch_llm.kernals.decode_attention import decode_attention_wrapper
+
+    lengths = [5, 64, 200, 300]
+    num_q_heads, num_kv_heads, block_size = 8, 2, 16
+    bf16_cache = PagedKVCache(64, block_size, num_kv_heads, head_dim, "cuda", t.bfloat16)
+    fp8_cache = PagedKVCache(64, block_size, num_kv_heads, head_dim, "cuda", FP8)
+    _, context, _, values = fill_decode_batch(
+        [bf16_cache, fp8_cache], lengths, num_kv_heads, head_dim, block_size, t.bfloat16, seed=7,
+    )
+    q = t.randn(len(lengths), num_q_heads, head_dim, device="cuda", dtype=t.bfloat16)
+
+    bf16_out = decode_attention_wrapper(q, bf16_cache, context).float()
+    fp8_out = decode_attention_wrapper(q, fp8_cache, context).float()
+
+    assert t.isfinite(fp8_out).all()
+    v_max = max(v.float().abs().max().item() for v in values)
+    worst = (fp8_out - bf16_out).abs().max().item()
+    assert worst <= 0.06 * v_max, f"max |fp8 - bf16| = {worst:.4f}, limit {0.06 * v_max:.4f}"
+
+
+@requires_fp8_cuda
+@t.inference_mode()
+@pytest.mark.parametrize("cache_dtype", [t.bfloat16, FP8])
+def test_decode_ignores_stale_cache_contents(cache_dtype):
+    # Real caches hold leftovers from finished requests, including the unused tail
+    # of each sequence's last block. Fill every position with NaN first: if any
+    # masked-out K/V value or scale is read and multiplied (0 * NaN = NaN), the
+    # output turns NaN. Scale loads need a mask with other=0, like K/V loads.
+    from torch_llm.inference.paged_kv_cache import PagedKVCache
+    from torch_llm.kernals.decode_attention import decode_attention_wrapper
+
+    lengths = [5, 70, 1]
+    num_q_heads, num_kv_heads, head_dim, block_size = 8, 2, 32, 16
+    cache = PagedKVCache(32, block_size, num_kv_heads, head_dim, "cuda", cache_dtype)
+    if cache.quantized:
+        cache.k.view(t.uint8).fill_(0x7F)  # 0x7F is NaN in float8_e4m3fn
+        cache.v.view(t.uint8).fill_(0x7F)
+        cache.k_scales.fill_(float("nan"))
+        cache.v_scales.fill_(float("nan"))
+    else:
+        cache.k.fill_(float("nan"))
+        cache.v.fill_(float("nan"))
+    manager, context, _, _ = fill_decode_batch([cache], lengths, num_kv_heads, head_dim, block_size, t.bfloat16, seed=8)
+    q = t.randn(len(lengths), num_q_heads, head_dim, device="cuda", dtype=t.float32)
+
+    actual = decode_attention_wrapper(q, cache, context)
+
+    assert t.isfinite(actual).all()
+    expected = t.stack([
+        reference_decode(q[row], *cache_history(cache, manager, int(context.cache_slots[row]), length))
+        for row, length in enumerate(lengths)
+    ])
+    t.testing.assert_close(actual.double(), expected, rtol=1e-4, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# G. End to end with an FP8 cache (CUDA sm89+)
+# ---------------------------------------------------------------------------
+
+@requires_fp8_cuda
+@t.inference_mode()
+def test_attention_decode_with_fp8_cache_matches_reference():
+    # Attention in decode mode must quantize the new token into the cache first,
+    # then attend over the full (dequantized) history including that token.
+    from torch_llm.inference.cache_manager import KVCacheManager
+    from torch_llm.inference.paged_kv_cache import PagedKVCache
+    from torch_llm.model.attention import Attention
+
+    t.manual_seed(9)
+    attention = Attention(128, 8, 2, 16, 256).cuda().eval()
+    manager = KVCacheManager(16, 4, 4, 64, "cuda")
+    cache = PagedKVCache(16, 4, 2, 16, "cuda", FP8)
+    lengths = [3, 9]
+    slots = []
+    for request_id, length in enumerate(lengths):
+        slots.append(manager.allocate_request(request_id, length + 1))
+        k = t.randn(length, 2, 16, device="cuda")
+        manager.append_request(request_id, t.arange(length, device="cuda"), k, t.randn_like(k), cache)
+        manager.advance(request_id, length)
+    slots = t.tensor(slots, device="cuda")
+    positions = t.tensor(lengths, device="cuda")
+    cu_seqlens = t.arange(3, dtype=t.int32, device="cuda")
+    context = manager.create_container(slots, cu_seqlens, positions)
+    x = t.randn(2, 128, device="cuda")
+
+    actual = attention(x, positions, cu_seqlens, 1, mode="decode", paged_kv_cache=cache, cache_batch_context=context)
+
+    new_k = attention.rope(attention.k_proj(x).reshape(2, 2, 16), positions)
+    new_v = attention.v_proj(x).reshape(2, 2, 16)
+    stored_k, stored_v = cache_contents(cache, context.physical_blocks, context.block_offsets)
+    for stored, fresh in ((stored_k, new_k), (stored_v, new_v)):
+        _, scales = reference_quantize(fresh)
+        assert ((stored - fresh).abs() <= 2 * error_bound(fresh, scales)).all()
+
+    q = attention.rope(attention.q_proj(x).reshape(2, 8, 16), positions)
+    rows = [
+        reference_decode(q[row], *cache_history(cache, manager, int(slot), length + 1)).reshape(-1)
+        for row, (slot, length) in enumerate(zip(slots.tolist(), lengths))
+    ]
+    expected = attention.o_proj(t.stack(rows).float())
+    t.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
+
+
+class _SpaceTokenizer:
+    eos_token_id = 10**6  # outside the vocabulary: generation always runs to max_new_tokens
+
+    def encode(self, text):
+        return [int(token) for token in text.split()]
+
+    def decode(self, tokens):
+        return " ".join(map(str, tokens))
+
+
+@requires_fp8_cuda
+def test_runtime_fp8_cache_logits_track_bf16_cache():
+    # Full model, full runtime (prefill, then decode through the paged FP8 cache).
+    # The FP8 run is forced along the BF16 run's greedy tokens, so both runs see
+    # identical inputs and every step's logits can be compared directly.
+    # Prefill attends over unquantized K/V (D8), so step 0 must match exactly;
+    # later steps differ only by KV quantization error.
+    from torch_llm.inference.runtime import InferenceRuntime
+    from torch_llm.model.model import TransformerLM
+    from torch_llm.model.model_config import ModelConfig
+
+    t.manual_seed(10)
+    model_config = ModelConfig(
+        vocab_size=128, d_model=64, num_layers=2, num_q_heads=4, num_kv_heads=2, head_dim=16,
+        d_ff=128, num_experts=4, top_k=2, model_max_seq_len=64,
+    )
+    model = TransformerLM(model_config).to(device="cuda", dtype=t.bfloat16).eval()
+    prompt, max_new_tokens = "5 17 42 8 99 3 64 21", 40  # context reaches 48 = 12 blocks, 3 splits
+
+    def run(kv_cache_dtype, forced_tokens=None):
+        logits_per_step = []
+
+        def sampler(logits):
+            logits_per_step.append(logits.float().clone())
+            if forced_tokens is None:
+                return logits.argmax(-1)
+            return forced_tokens[len(logits_per_step) - 1].to(logits.device)
+
+        config = KVCacheConfig(num_blocks=32, block_size=4, max_cache_slots=2, cache_max_seq_len=64, kv_cache_dtype=kv_cache_dtype)
+        runtime = InferenceRuntime(model, model_config, _SpaceTokenizer(), config, sampler=sampler)
+        runtime.submit(prompt, max_new_tokens=max_new_tokens)
+        runtime.generate()
+        return logits_per_step
+
+    bf16_logits = run(t.bfloat16)
+    forced = [step.argmax(-1) for step in bf16_logits]
+    fp8_logits = run(FP8, forced_tokens=forced)
+
+    assert len(bf16_logits) == len(fp8_logits) == max_new_tokens
+    # Prefill never reads the cache; bf16 tolerance allows for non-bitwise-deterministic kernels.
+    t.testing.assert_close(fp8_logits[0], bf16_logits[0], rtol=1.6e-2, atol=1e-2)
+    similarities = [
+        t.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim=0).item()
+        for a, b in zip(fp8_logits[1:], bf16_logits[1:])
+    ]
+    assert all(math.isfinite(s) for s in similarities)
+    assert min(similarities) >= 0.99, f"per-step logit cosine similarity, min {min(similarities):.4f}: {similarities}"
