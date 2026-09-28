@@ -34,8 +34,11 @@ def train(
     while step < train_config.total_steps:
         epoch_start_step = step
 
-        for batch in train_loader:
-            batch = batch.to(
+        for batch_meta, packed_training_batch in train_loader:
+            batch_meta = batch_meta.to(
+                device,
+            )
+            packed_training_batch = packed_training_batch.to(
                 device,
                 non_blocking=True
             )
@@ -44,10 +47,11 @@ def train(
             start = time.perf_counter()
 
             model_metrics = train_step(
-                model,
-                batch,
-                muon,
-                adamw,
+                model=model,
+                packed_training_batch=packed_training_batch,
+                batch_meta=batch_meta,
+                muon=muon,
+                adamw=adamw,
                 aux_loss_weight=train_config.aux_loss_weight,
                 max_grad_norm=train_config.max_grad_norm,
                 muon_scheduler=muon_scheduler,

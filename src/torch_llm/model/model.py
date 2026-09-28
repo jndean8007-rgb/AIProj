@@ -3,6 +3,8 @@ import torch as t
 from typing_extensions import Literal
 from jaxtyping import Shaped
 
+from core.aux_outputs import AuxOutputs
+from core.batch_meta import BatchMeta
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.decoder_block import DecoderBlock
 from torch_llm.model.outputs import ModelOutput
@@ -50,33 +52,27 @@ class TransformerLM(nn.Module):
 
     def forward(
             self,
-            token_ids: Shaped[t.Tensor, 'T'],
-            cu_seqlens: Shaped[t.Tensor, 'B+1'],
-            token_positions: Shaped[t.Tensor, 'T'],
-            batch_max_seq_len: int,
+            batch_meta: BatchMeta,
             paged_kv_caches= None,
-            cache_batch_context = None,
-            mode: Literal['train', 'prefill', 'decode'] = 'train',
     ):
 
         moe_stats = []
+        aux_outputs = AuxOutputs()
 
-        x = self.embedding(token_ids)
+        x = self.embedding(batch_meta.token_ids)
 
         for layer_idx, block in enumerate(self.blocks):
             layer_cache = None if paged_kv_caches is None else paged_kv_caches[layer_idx]
 
-            x, stats= block(
+            x, new_aux_outputs, stats = block(
                 x=x,
-                cu_seqlens=cu_seqlens,
-                token_positions=token_positions,
-                batch_max_seq_len=batch_max_seq_len,
-                mode=mode,
+                batch_meta=batch_meta,
                 paged_kv_cache=layer_cache,
-                cache_batch_context=cache_batch_context,
             )
 
             moe_stats.append(stats)
+
+            aux_outputs.merged(new_aux_outputs, prefix=f"layers.{layer_idx}")
 
         x = self.final_norm(x)
 

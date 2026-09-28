@@ -2,6 +2,7 @@ import torch as t
 import torch.nn as nn
 from jaxtyping import Shaped
 
+from core.aux_outputs import AuxOutputs
 from torch_llm.kernals.moe.grouped_swiglu_up import grouped_swiglu_up
 from torch_llm.kernals.moe.grouped_down import grouped_down
 from torch_llm.model.moe.expert_weights import ExpertWeights
@@ -113,4 +114,15 @@ class MoE(nn.Module):
         output = t.zeros_like(x)
         output.index_add_(0, tokens_sorted, weighted_outputs)
 
-        return output, stats
+        aux_outputs = AuxOutputs(
+            losses={"balance": stats.aux_loss},
+            metrics={
+                "expert_fractions": stats.expert_fractions.detach(),
+                "load_cv": stats.load_cv.detach(),
+                "max_expert_fraction": stats.max_expert_fraction.detach(),
+                "mean_entropy": stats.mean_entropy.detach(),
+                "mean_routing_margin": stats.mean_routing_margin.detach(),
+            },
+        )
+
+        return output, aux_outputs, stats

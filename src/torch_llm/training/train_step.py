@@ -4,8 +4,11 @@ import time
 import torch as t
 import torch.nn.functional as F
 
+from core.batch_meta import BatchMeta
+from model.model import TransformerLM
 from torch_llm.data_pipeline.pack_training import PackedTrainingBatch
 from torch_llm.inference import kv_cache
+from training.optim.muon import Muon
 
 
 @dataclass
@@ -17,10 +20,11 @@ class TrainStepOutput:
 
 
 def train_step(
-        model,
-        batch: PackedTrainingBatch,
-        muon,
-        adamw,
+        model: TransformerLM,
+        packed_training_batch: PackedTrainingBatch,
+        batch_meta: BatchMeta,
+        muon: Muon,
+        adamw: t.optim.AdamW,
         *,
         aux_loss_weight: float,
         max_grad_norm: float | None = None,
@@ -103,13 +107,8 @@ def train_step(
     t0 = time.perf_counter()
 
     model_output = model(
-        token_ids=batch.token_ids,
-        cu_seqlens=batch.cu_seqlens,
-        token_positions=batch.token_positions,
-        batch_max_seq_len=batch.batch_max_seq_len,
-        mode="train",
+        batch_meta=batch_meta,
         paged_kv_caches=None,
-        cache_batch_context=None
     )
 
     t.cuda.synchronize()
@@ -124,7 +123,7 @@ def train_step(
     t.cuda.synchronize()
     t2 = time.perf_counter()
 
-    lm_loss = F.cross_entropy(model_output.logits.float(), batch.targets)
+    lm_loss = F.cross_entropy(model_output.logits.float(), packed_training_batch.targets)
 
     t.cuda.synchronize()
     t3 = time.perf_counter()

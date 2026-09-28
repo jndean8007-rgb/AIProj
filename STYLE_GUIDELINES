@@ -1,0 +1,192 @@
+PROJECT CODE STYLE GUIDELINES
+
+These guidelines apply to all Python code in this project unless there is a strong technical reason not to follow them.
+
+The main priorities are:
+- Readability
+- Clear visual separation
+- Consistent structure
+- Simple control flow
+- Easy navigation through larger systems
+- Avoiding unnecessarily dense or clever code
+
+
+1. BLANK LINES BETWEEN DEFINITIONS
+
+Top-level functions must have TWO blank lines between them.
+
+Example:
+
+def first_function():
+    ...
+
+
+def second_function():
+    ...
+
+
+Top-level classes must have at least TWO blank lines between them and surrounding top-level definitions.
+
+Methods inside a class should normally have ONE blank line between them.
+
+Nested functions should normally have ONE blank line separating them from surrounding logical sections.
+
+Do not compress unrelated definitions together.
+
+
+2. VISUAL SPACING INSIDE FUNCTIONS
+
+Avoid large uninterrupted walls of code.
+
+As a general rule, avoid more than approximately FOUR consecutive lines of code without a blank line when a natural logical separation exists.
+
+Use blank lines to separate stages such as:
+- Validation
+- Shape extraction
+- Input preparation
+- Index calculations
+- Cache operations
+- Tensor transformations
+- Kernel launches
+- State updates
+- Output construction
+- Return logic
+
+Do not insert blank lines mechanically every four lines.
+
+Closely related operations should remain together when separating them would reduce readability.
+
+The goal is to make the structure of a function visible at a glance.
+
+
+3. COMMENTS
+
+Standalone comments should have an empty line above them.
+
+Preferred:
+
+input_ids = prepare_input()
+
+
+# Resolve the physical cache blocks used by this batch.
+block_table = resolve_blocks(input_ids)
+
+
+Avoid:
+
+input_ids = prepare_input()
+# Resolve the physical cache blocks used by this batch.
+block_table = resolve_blocks(input_ids)
+
+
+Comments should primarily explain:
+- Why something is necessary
+- A non-obvious invariant
+- An architectural decision
+- A performance consideration
+- An unusual algorithmic step
+- A constraint that future code must preserve
+
+Avoid comments that merely translate the code into English.
+
+Bad:
+
+# Increment index.
+index += 1
+
+Better:
+
+# Position zero is reserved for the BOS token.
+index += 1
+
+
+Small comments that are inseparable from a particular declaration may stay directly beside it when this is clearer.
+
+Docstrings are not subject to the blank-line-above-comment rule.
+
+
+4. LINE LENGTH
+
+Avoid extremely long lines.
+
+Aim for roughly 100 characters or fewer when practical.
+
+Lines above approximately 120 characters should normally be split unless doing so clearly makes the code less readable.
+
+Long:
+- Function calls
+- Function signatures
+- Conditions
+- Type annotations
+- Expressions
+- Collections
+- Indexing operations
+
+should be moved across multiple lines when appropriate.
+
+Preferred:
+
+result = some_long_function(
+    input_tensor,
+    cache_context,
+    sequence_lengths,
+    block_table,
+)
+
+
+Avoid:
+
+result = some_long_function(input_tensor, cache_context, sequence_lengths, block_table)
+
+
+For long conditions:
+
+if (
+    request.is_active
+    and request.has_cache
+    and request.sequence_length > 0
+):
+    ...
+
+
+Do not preserve a one-line expression simply because Python allows it.
+
+
+5. FUNCTION CALLS
+
+Keep simple function calls on one line.
+
+When a call becomes difficult to scan, place its major arguments on separate lines.
+
+Use trailing commas in multiline calls.
+
+Preferred:
+
+batch = build_decode_batch(
+    requests=requests,
+    cache_context=cache_context,
+    device=device,
+)
+
+
+Avoid awkward partial wrapping such as:
+
+batch = build_decode_batch(requests=requests, cache_context=
+                           cache_context, device=device)
+
+
+6. FUNCTION SIGNATURES
+
+Keep short signatures on one line.
+
+Use multiline signatures when the function has several parameters or substantial type annotations.
+
+Preferred:
+
+def build_batch(
+    requests: list[Request],
+    cache_context: CacheContext,
+    device: torch.device,
+) -> Batch:
+    ...
+

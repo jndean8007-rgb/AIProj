@@ -3,6 +3,8 @@ import torch.nn as nn
 from typing import Literal
 from jaxtyping import Shaped
 
+from core.aux_outputs import AuxOutputs
+from core.batch_meta import BatchMeta
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.moe.moe import MoE
 from torch_llm.model.rmsnorm import RMSNorm
@@ -45,30 +47,25 @@ class DecoderBlock(nn.Module):
     def forward(
             self,
             x: Shaped[t.Tensor, 'T D'],
-            cu_seqlens: Shaped[t.Tensor, 'B+1'],
-            token_positions: Shaped[t.Tensor, 'T'],
-            batch_max_seq_len: int,
-            mode: Literal['train', 'prefill', 'decode'] = 'train',
+            batch_meta: BatchMeta,
             paged_kv_cache = None,
-            cache_batch_context = None,
     ):
 
         attn_out = self.attention(
             self.attn_norm(x),
-            token_positions,
-            cu_seqlens,
-            batch_max_seq_len,
-            mode=mode,
+            batch_meta=batch_meta,
             paged_kv_cache=paged_kv_cache,
-            cache_batch_context=cache_batch_context,
         )
 
         x = x + attn_out
 
-        moe_out, stats = self.moe(
+        aux_outputs = AuxOutputs()
+
+        moe_out, new_aux_outputs, stats = self.moe(
             self.moe_norm(x),
         )
 
         output = x + moe_out
 
-        return output, stats
+        aux_outputs = aux_outputs.merged(new_aux_outputs, prefix="ffn")
+        return output, aux_outputs, stats

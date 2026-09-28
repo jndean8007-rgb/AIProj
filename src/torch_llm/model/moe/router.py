@@ -49,7 +49,7 @@ class Router(nn.Module):
         return expert_indices, routing_weights, router_probs
 
     @t.no_grad()
-    def update_expert_bias( #working on currently
+    def update_expert_bias(
             self,
             expert_fractions,
     ):

@@ -2,6 +2,8 @@ import torch as t
 import torch.nn as nn
 from jaxtyping import Shaped
 from einops import rearrange, reduce, repeat, pack, unpack
+
+from core.batch_meta import BatchMeta
 from torch_llm.model.rope import RoPE
 from torch_llm.kernals.flash_attention import FlashAttentionFunction
 from torch_llm.inference.kv_cache import KVCache
@@ -44,12 +46,8 @@ class Attention(nn.Module):
         self.rope = RoPE(head_dim, model_max_seq_len, theta)
 
     def forward(self, x: Shaped[t.Tensor, "T d_model"],
-                token_positions,
-                cu_seqlens,
-                batch_max_seq_len,
-                mode: Literal['train', 'prefill', 'decode'] = 'train',
+                batch_meta: BatchMeta,
                 paged_kv_cache = None,
-                cache_batch_context = None,
                 attention_mask=None,
                 ):
         assert mode in ("train", "prefill", "decode")
@@ -60,25 +58,25 @@ class Attention(nn.Module):
         k = rearrange(k, "T (h d) -> T h d", h=self.num_kv_heads, d=self.head_dim)
         v = rearrange(v, "T (h d) -> T h d", h=self.num_kv_heads, d=self.head_dim)
 
-        b = cu_seqlens.shape[0] - 1
-        q_rope = self.rope(q, token_positions)
-        k_rope = self.rope(k, token_positions)
+        b = batch_meta.cu_seqlens.shape[0] - 1
+        q_rope = self.rope(q, batch_meta.token_positions)
+        k_rope = self.rope(k, batch_meta.token_positions)
 
-        if mode == 'train':
+        if batch_meta.mode == 'train':
             assert paged_kv_cache is None
             attention_output = FlashAttentionFunction.apply(
                 q_rope,
                 k_rope,
                 v,
-                cu_seqlens,
-                batch_max_seq_len
+                batch_meta.cu_seqlens,
+                batch_meta.batch_max_seq_len
             )
 
-        elif mode == 'decode':
+        elif batch_meta.mode == 'decode':
             assert paged_kv_cache is not None
             paged_kv_cache.append_kv(
-                cache_batch_context.physical_blocks,
-                cache_batch_context.block_offsets,
+                batch_meta.cache_context.physical_blocks,
+                batch_meta.cache_context.block_offsets,
                 k_rope,
                 v,
             )
@@ -87,7 +85,7 @@ class Attention(nn.Module):
             attention_output = decode_attention_wrapper(
                 q_rope,
                 paged_kv_cache,
-                cache_batch_context
+                batch_meta.cache_context
             )
 
         else:
@@ -96,13 +94,13 @@ class Attention(nn.Module):
                 q_rope,
                 k_rope,
                 v,
-                cu_seqlens,
-                batch_max_seq_len
+                batch_meta.cu_seqlens,
+                batch_meta.max_seqlen
             )
 
             paged_kv_cache.append_kv(
-                cache_batch_context.physical_blocks,
-                cache_batch_context.block_offsets,
+                batch_meta.cache_context.physical_blocks,
+                batch_meta.cache_context.block_offsets,
                 k_rope,
                 v,
             )
