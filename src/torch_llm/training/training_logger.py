@@ -13,7 +13,8 @@ class TrainingLogger:
 
         overall_metrics["Loss"] = model_metrics.loss.item()
         overall_metrics["LM Loss"] = model_metrics.lm_loss.item()
-        overall_metrics["Aux Loss"] = model_metrics.aux_loss.item()
+        overall_metrics["Aux Loss"] = {group: loss.item()
+                                       for group, loss in model_metrics.aux_outputs.losses.items()}
 
         if model_metrics.grad_norm is not None:
             overall_metrics["GradNorm"] = model_metrics.grad_norm.item()

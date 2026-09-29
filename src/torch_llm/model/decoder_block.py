@@ -1,10 +1,9 @@
 import torch as t
 import torch.nn as nn
-from typing import Literal
 from jaxtyping import Shaped
 
-from core.aux_outputs import AuxOutputs
-from core.batch_meta import BatchMeta
+from torch_llm.core.aux_outputs import AuxOutputs
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.moe.moe import MoE
 from torch_llm.model.rmsnorm import RMSNorm
@@ -61,11 +60,11 @@ class DecoderBlock(nn.Module):
 
         aux_outputs = AuxOutputs()
 
-        moe_out, new_aux_outputs, stats = self.moe(
+        moe_out, new_aux_outputs = self.moe(
             self.moe_norm(x),
         )
 
         output = x + moe_out
 
         aux_outputs = aux_outputs.merged(new_aux_outputs, prefix="ffn")
-        return output, aux_outputs, stats
+        return output, aux_outputs

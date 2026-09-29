@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -16,5 +16,8 @@ class TrainConfig:
     checkpoint_interval: int = 500
     eval_interval: int = 100
 
-    aux_loss_weight: float = 0.01
     max_grad_norm: float | None = 1.0
+
+    aux_loss_weights: dict[str, float] = field(
+        default_factory=lambda: {"balance": 0.01}
+    ) #figure out how this actualyl works

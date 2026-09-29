@@ -32,14 +32,16 @@ def test_moe_end_to_end_gradients():
         requires_grad=True,
     )
 
-    output, stats = moe(x)
+    output, aux = moe(x)
 
     assert output.shape == (T, D)
+    # The MoE names its own loss; parents add the namespace prefix.
+    assert set(aux.losses) == {"balance"}
 
     loss = output.float().square().mean()
 
-    # If aux_loss is intended to participate in training:
-    loss = loss + 0.01 * stats.aux_loss
+    # The balance loss must carry gradient back to the router.
+    loss = loss + 0.01 * aux.losses["balance"]
 
     loss.backward()
 

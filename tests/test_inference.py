@@ -41,11 +41,12 @@ class IncrementModel(t.nn.Module):
         self.calls = []
         self.fail = False
 
-    def forward(self, tokens, cu_seqlens, positions, max_seq_len, *, paged_kv_caches, cache_batch_context, mode):
+    def forward(self, batch_meta, paged_kv_caches):
         assert not self.training and not t.is_grad_enabled()
         if self.fail:
             raise RuntimeError("model failure")
-        context = cache_batch_context
+        tokens, cu_seqlens, positions = batch_meta.token_ids, batch_meta.cu_seqlens, batch_meta.token_positions
+        max_seq_len, mode, context = batch_meta.max_seqlen, batch_meta.mode, batch_meta.cache_context
         slots = context.cache_slots.tolist()
         lengths = context.context_lengths.tolist()
         boundaries = cu_seqlens.tolist()
@@ -174,7 +175,8 @@ def test_input_output_and_tokenizer_list_contract(capsys):
     batch = InferenceInputProcessor(tokenizer).prepare(["1 2", "3"])
     assert batch.token_ids.tolist() == [1, 2, 3]
     OutputHandler(tokenizer).handle_output([4, 5], [10, 11])
-    assert capsys.readouterr().out == "Stream 10 -> 4\nStream 11 -> 5\n"
+    # The handler streams decoded text without separators.
+    assert capsys.readouterr().out == "45"
     from torch_llm.data_pipeline.bpe_tokenizer import BPETokenizer
     wrapped = BPETokenizer(tokenizer, None)
     assert wrapped.decode([7, 8]) == "7 8"

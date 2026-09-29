@@ -556,6 +556,7 @@ def test_attention_decode_with_fp8_cache_matches_reference():
     # then attend over the full (dequantized) history including that token.
     from torch_llm.inference.cache_manager import KVCacheManager
     from torch_llm.inference.paged_kv_cache import PagedKVCache
+    from torch_llm.core.batch_meta import BatchMeta
     from torch_llm.model.attention import Attention
 
     t.manual_seed(9)
@@ -575,7 +576,11 @@ def test_attention_decode_with_fp8_cache_matches_reference():
     context = manager.create_container(slots, cu_seqlens, positions)
     x = t.randn(2, 128, device="cuda")
 
-    actual = attention(x, positions, cu_seqlens, 1, mode="decode", paged_kv_cache=cache, cache_batch_context=context)
+    meta = BatchMeta(
+        token_ids=t.zeros_like(positions), cu_seqlens=cu_seqlens, token_positions=positions,
+        max_seqlen=1, mode="decode", cache_context=context,
+    )
+    actual = attention(x, meta, paged_kv_cache=cache)
 
     new_k = attention.rope(attention.k_proj(x).reshape(2, 2, 16), positions)
     new_v = attention.v_proj(x).reshape(2, 2, 16)

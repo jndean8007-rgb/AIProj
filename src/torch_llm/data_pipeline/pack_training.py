@@ -28,7 +28,7 @@ def pack_training_sequences(
 
     cu_seqlens = t.cat([
         t.zeros(1, dtype=t.int32, device=device),
-        t.tensor(lengths, dtype=t.int32, device=device).cumsum(dim=0),
+        t.tensor(lengths, dtype=t.int32, device=device).cumsum(dim=0, dtype=t.int32),
     ])
 
     token_positions = t.cat([

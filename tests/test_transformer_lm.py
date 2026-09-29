@@ -1,6 +1,7 @@
 import pytest
 import torch as t
 
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.inference.batching import build_prefill_batch
 from torch_llm.inference.cache_manager import initialize_cache
 from torch_llm.inference.kvcache_config import KVCacheConfig
@@ -8,6 +9,13 @@ from torch_llm.inference.request_state import RequestState
 from torch_llm.inference.runtime import InferenceRuntime
 from torch_llm.model.model import TransformerLM
 from torch_llm.model.model_config import ModelConfig
+
+
+def make_meta(token_ids, cu_seqlens, positions, max_seqlen, mode, cache_context=None):
+    return BatchMeta(
+        token_ids=token_ids, cu_seqlens=cu_seqlens, token_positions=positions,
+        max_seqlen=max_seqlen, mode=mode, cache_context=cache_context,
+    )
 
 
 def small_config():
@@ -28,7 +36,7 @@ def test_transformer_prefill_decode_matches_full_forward(dtype):
     tokens = [[17, 42, 8, 31, 33, 7, 24], [5, 6, 19, 25]]
     full = build_prefill_batch([RequestState(i, row, 1) for i, row in enumerate(tokens)], "cuda")
     logits_full = model(
-        full.token_ids, full.cu_seqlens, full.token_positions, full.batch_max_seq_len, mode="train",
+        make_meta(full.token_ids, full.cu_seqlens, full.token_positions, full.batch_max_seq_len, "train"),
     ).logits
     manager, caches = initialize_cache(KVCacheConfig(16, 4, 4, 32, dtype), config, "cuda")
     slots = [manager.allocate_request(i, len(row)) for i, row in enumerate(tokens)]
@@ -38,8 +46,8 @@ def test_transformer_prefill_decode_matches_full_forward(dtype):
     ], "cuda")
     context = manager.create_container(t.tensor(slots, device="cuda"), prefill.cu_seqlens, prefill.token_positions)
     prefill_out = model(
-        prefill.token_ids, prefill.cu_seqlens, prefill.token_positions, prefill.batch_max_seq_len,
-        mode="prefill", paged_kv_caches=caches, cache_batch_context=context,
+        make_meta(prefill.token_ids, prefill.cu_seqlens, prefill.token_positions, prefill.batch_max_seq_len, "prefill", context),
+        paged_kv_caches=caches,
     ).logits
     manager.advance_batch([0, 1], prompt_lengths)
     cached_rows = [[prefill_out[:4]], [prefill_out[4:]]]
@@ -49,7 +57,7 @@ def test_transformer_prefill_decode_matches_full_forward(dtype):
         inputs = t.tensor([tokens[i][prompt_lengths[i] + offset] for i in ids], device="cuda")
         cu = t.arange(len(ids) + 1, device="cuda", dtype=t.int32)
         context = manager.create_container(t.tensor([slots[i] for i in ids], device="cuda"), cu, positions)
-        out = model(inputs, cu, positions, 1, mode="decode", paged_kv_caches=caches, cache_batch_context=context).logits
+        out = model(make_meta(inputs, cu, positions, 1, "decode", context), paged_kv_caches=caches).logits
         manager.advance_batch(ids, [1] * len(ids))
         for row, request_id in enumerate(ids):
             cached_rows[request_id].append(out[row:row + 1])
@@ -78,7 +86,8 @@ def test_runtime_matches_full_recomputation_and_preserves_router_state():
         generated = []
         for _ in range(3):
             batch = build_prefill_batch([RequestState(0, history, 1)], "cuda")
-            logits = model(batch.token_ids, batch.cu_seqlens, batch.token_positions, len(history), mode="train").logits
+            meta = make_meta(batch.token_ids, batch.cu_seqlens, batch.token_positions, len(history), "train")
+            logits = model(meta).logits
             token = int(logits[-1].argmax())
             generated.append(token)
             history.append(token)

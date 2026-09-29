@@ -3,8 +3,6 @@ from dataclasses import dataclass, field
 
 import torch as t
 
-from model.moe.moe_stats import MoeStats
-
 
 @dataclass
 class AuxOutputs:
@@ -41,7 +39,7 @@ class AuxOutputs:
 
     def total_loss(self, weights: dict[str, float]):
         if not self.losses:
-            return t.zeros(1)
+            return t.zeros(())
 
         loss_map: defaultdict[str, list[t.Tensor]] = defaultdict(list)
 

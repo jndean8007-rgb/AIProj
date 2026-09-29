@@ -3,7 +3,7 @@ from typing import Literal
 
 import torch as t
 
-from core.batch_meta import BatchMeta
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.inference import InferenceTokenizer
 from torch_llm.inference.batching import (
     DecodeBatch,

@@ -31,13 +31,17 @@ def text_records():
 def test_streaming_targets_and_reiteration(seq_len):
     source = IterableDataset.from_generator(text_records)
     dataset = StreamingDataset(source, seq_len, CharacterTokenizer())
-    batches = list(loader(dataset, seq_len, 2 * seq_len))
+    metas, batches = zip(*loader(dataset, seq_len, 2 * seq_len))
 
     tokens = [97, 98, 99, 100, 0, 101, 0, 102, 103, 104, 105, 106, 107, 108, 0, 0]
     assert t.cat([batch.token_ids for batch in batches]).tolist() == tokens[:-1]
     assert t.cat([batch.targets for batch in batches]).tolist() == tokens[1:]
     assert all(batch.token_ids.numel() <= 2 * seq_len for batch in batches)
-    assert all(batch.batch_max_seq_len <= seq_len for batch in batches)
+    # The meta describes exactly the packed batch it arrives with.
+    for meta, batch in zip(metas, batches):
+        assert meta.mode == "train" and meta.cache_context is None
+        assert t.equal(meta.token_ids, batch.token_ids)
+        assert meta.max_seqlen == batch.batch_max_seq_len <= seq_len
     assert [seq.tolist() for seq in dataset] == [seq.tolist() for seq in dataset]
 
 
@@ -118,10 +122,10 @@ def test_run_training_accepts_paths_and_hugging_face_streams(tmp_path, monkeypat
         assert isinstance(train_loader.dataset, StreamingDataset) == stream_training
         assert isinstance(eval_loader.dataset, StreamingDataset) != stream_training
         for data_loader in [train_loader, eval_loader]:
-            batch = next(iter(data_loader))
+            meta, batch = next(iter(data_loader))
             assert batch.token_ids.dtype == t.long
             assert batch.token_ids.shape == batch.targets.shape
-            assert batch.batch_max_seq_len <= model_config.model_max_seq_len
+            assert meta.max_seqlen <= model_config.model_max_seq_len
         seen.append(model)
         return model
 

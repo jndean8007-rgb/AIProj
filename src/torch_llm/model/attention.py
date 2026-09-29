@@ -3,7 +3,7 @@ import torch.nn as nn
 from jaxtyping import Shaped
 from einops import rearrange, reduce, repeat, pack, unpack
 
-from core.batch_meta import BatchMeta
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.rope import RoPE
 from torch_llm.kernals.flash_attention import FlashAttentionFunction
 from torch_llm.inference.kv_cache import KVCache
@@ -50,7 +50,7 @@ class Attention(nn.Module):
                 paged_kv_cache = None,
                 attention_mask=None,
                 ):
-        assert mode in ("train", "prefill", "decode")
+
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -69,7 +69,7 @@ class Attention(nn.Module):
                 k_rope,
                 v,
                 batch_meta.cu_seqlens,
-                batch_meta.batch_max_seq_len
+                batch_meta.max_seqlen
             )
 
         elif batch_meta.mode == 'decode':
@@ -80,7 +80,6 @@ class Attention(nn.Module):
                 k_rope,
                 v,
             )
-            #CHANGE TO PROPER USAGE
 
             attention_output = decode_attention_wrapper(
                 q_rope,

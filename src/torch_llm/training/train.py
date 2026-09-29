@@ -52,7 +52,7 @@ def train(
                 batch_meta=batch_meta,
                 muon=muon,
                 adamw=adamw,
-                aux_loss_weight=train_config.aux_loss_weight,
+                aux_loss_weights=train_config.aux_loss_weights,
                 max_grad_norm=train_config.max_grad_norm,
                 muon_scheduler=muon_scheduler,
                 adamw_scheduler=adamw_scheduler
@@ -73,7 +73,7 @@ def train(
                     "Step time (s)": step_time,
                     "Validation loss": evaluate(model, eval_loader, device=device),
                     "VRAM GB": t.cuda.memory_allocated() / (1024 ** 3),
-                    "Tokens / sec": batch.token_positions.numel() / step_time,
+                    "Tokens / sec": batch_meta.token_positions.numel() / step_time,
                 }
 
                 training_logger.log(model_metrics=model_metrics, other_metrics=other_metrics)

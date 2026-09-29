@@ -5,7 +5,7 @@ the model all use them; putting them under `model/` would make the engine and th
 data pipeline depend on model internals.
 
 BatchMeta (torch_llm/core/batch_meta.py): one frozen description of a forward pass.
-  fields: token_ids [T] int, positions [T] int, cu_seqlens [B+1] int32,
+  fields: token_ids [T] int, token_positions [T] int, cu_seqlens [B+1] int32,
           max_seqlen: int (a Python int, never a tensor), mode: "train" | "prefill" | "decode",
           cache_context: CacheContainer | None  (transitional; replaced by state views in step 3)
   properties: num_tokens (T), num_sequences (B)  -- from shapes only
@@ -39,7 +39,7 @@ def make_meta(device="cpu", mode="train", lengths=(3, 5), cache_context=None, **
         cu.append(cu[-1] + n)
     fields = dict(
         token_ids=t.zeros(total, dtype=t.long, device=device),
-        positions=t.cat([t.arange(n) for n in lengths]).to(device) if device != "meta" else t.empty(total, dtype=t.long, device="meta"),
+        token_positions=t.cat([t.arange(n) for n in lengths]).to(device) if device != "meta" else t.empty(total, dtype=t.long, device="meta"),
         cu_seqlens=t.tensor(cu, dtype=t.int32).to(device) if device != "meta" else t.empty(len(cu), dtype=t.int32, device="meta"),
         max_seqlen=max(lengths),
         mode=mode,
@@ -90,7 +90,7 @@ def test_decode_requires_one_token_per_sequence():
 
 @pytest.mark.parametrize("overrides", [
     {"mode": "verify"},                                          # not a supported mode yet
-    {"positions": t.zeros(7, dtype=t.long)},                     # length != T
+    {"token_positions": t.zeros(7, dtype=t.long)},                     # length != T
     {"token_ids": t.zeros(8, dtype=t.float32)},                  # not integer
     {"token_ids": t.zeros(2, 4, dtype=t.long)},                  # not 1-D
     {"cu_seqlens": t.tensor([0, 3, 8], dtype=t.int64)},          # kernels expect int32
@@ -106,7 +106,7 @@ def test_invalid_meta_is_rejected(overrides):
 
 def test_mixed_devices_are_rejected():
     with pytest.raises(ValueError):
-        make_meta(positions=t.empty(8, dtype=t.long, device="meta"))
+        make_meta(token_positions=t.empty(8, dtype=t.long, device="meta"))
 
 
 @pytest.mark.parametrize("mode,lengths,cache", [("train", (3, 5), None), ("prefill", (3, 5), CACHE), ("decode", (1, 1, 1), CACHE)])
@@ -121,7 +121,7 @@ def test_to_moves_tensors_and_keeps_everything_else():
     meta = make_meta(mode="prefill", cache_context=CACHE)
     moved = meta.to("meta")
     assert moved is not meta
-    for name in ("token_ids", "positions", "cu_seqlens"):
+    for name in ("token_ids", "token_positions", "cu_seqlens"):
         assert getattr(moved, name).device.type == "meta"
         assert getattr(moved, name).shape == getattr(meta, name).shape
         assert getattr(moved, name).dtype == getattr(meta, name).dtype

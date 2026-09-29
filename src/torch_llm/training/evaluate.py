@@ -13,20 +13,16 @@ def evaluate(
     accum_loss = 0
 
     with t.no_grad():
-        for batch in eval_loader:
+        for batch_meta, packed_training_batch in eval_loader:
             batches += 1
 
-            batch = batch.to(device)
+            batch_meta = batch_meta.to(device)
+            packed_training_batch = packed_training_batch.to(device)
 
             accum_loss += cross_entropy(model(
-                token_ids=batch.token_ids,
-                cu_seqlens=batch.cu_seqlens,
-                token_positions=batch.token_positions,
-                batch_max_seq_len=batch.batch_max_seq_len,
-                mode="train",
+                batch_meta,
                 paged_kv_caches=None,
-                cache_batch_context=None
-            ).logits.float(), batch.targets).item()
+            ).logits.float(), packed_training_batch.targets).item()
 
     model.train()
     return accum_loss / batches

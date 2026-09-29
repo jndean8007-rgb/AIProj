@@ -5,10 +5,19 @@ import torch as t
 
 from torch_llm.inference.cache_manager import KVCacheManager
 from torch_llm.inference.paged_kv_cache import PagedKVCache
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.attention import Attention
 
 
 pytestmark = pytest.mark.skipif(not t.cuda.is_available(), reason="Attention kernels require CUDA")
+
+
+def make_meta(positions, cu_seqlens, max_seqlen, mode, cache_context=None):
+    # Attention reads positions, cu_seqlens, max_seqlen, mode and the cache context; token_ids are unused here.
+    return BatchMeta(
+        token_ids=t.zeros_like(positions), cu_seqlens=cu_seqlens, token_positions=positions,
+        max_seqlen=max_seqlen, mode=mode, cache_context=cache_context,
+    )
 
 
 @pytest.fixture
@@ -20,10 +29,8 @@ def attention():
 @t.inference_mode()
 def test_attention_train_mode(attention):
     x = t.randn(14, 128, device="cuda")
-    output = attention(
-        x, t.arange(7, device="cuda").repeat(2),
-        t.tensor([0, 7, 14], dtype=t.int32, device="cuda"), 7, mode="train",
-    )
+    meta = make_meta(t.arange(7, device="cuda").repeat(2), t.tensor([0, 7, 14], dtype=t.int32, device="cuda"), 7, "train")
+    output = attention(x, meta)
     assert output.shape == x.shape
     assert t.isfinite(output).all()
 
@@ -37,8 +44,8 @@ def test_attention_prefill_updates_cache(attention):
     positions = t.tensor([0, 1, 2, 0, 1, 2, 3, 4], device="cuda")
     x = t.randn(8, 128, device="cuda")
     context = manager.create_container(slots, cu, positions)
-    expected = attention(x, positions, cu, 5, mode="train")
-    actual = attention(x, positions, cu, 5, mode="prefill", paged_kv_cache=cache, cache_batch_context=context)
+    expected = attention(x, make_meta(positions, cu, 5, "train"))
+    actual = attention(x, make_meta(positions, cu, 5, "prefill", context), paged_kv_cache=cache)
     manager.advance_batch([10, 20], [3, 5])
     t.testing.assert_close(actual, expected, rtol=1e-2, atol=1e-2)
     assert manager.seq_lens[slots].tolist() == [3, 5]
@@ -65,7 +72,7 @@ def test_attention_decode_updates_cache_and_matches_reference(attention):
     cu = t.arange(3, dtype=t.int32, device="cuda")
     context = manager.create_container(slots, cu, positions)
     x = t.randn(2, 128, device="cuda")
-    actual = attention(x, positions, cu, 1, mode="decode", paged_kv_cache=cache, cache_batch_context=context)
+    actual = attention(x, make_meta(positions, cu, 1, "decode", context), paged_kv_cache=cache)
     manager.advance_batch([0, 1], [1, 1])
     q = attention.rope(attention.q_proj(x).reshape(2, 8, 16), positions)
     expected_k = attention.rope(attention.k_proj(x).reshape(2, 2, 16), positions)

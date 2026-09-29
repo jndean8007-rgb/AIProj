@@ -100,7 +100,6 @@ class MoE(nn.Module):
         expert_inputs = x[tokens_sorted]
 
 
-        #changing to call moe autograd instead
         expert_outputs = MoeAutograd.apply(
             expert_inputs,
             self.expert_weights.gate_weight,
@@ -123,6 +122,6 @@ class MoE(nn.Module):
                 "mean_entropy": stats.mean_entropy.detach(),
                 "mean_routing_margin": stats.mean_routing_margin.detach(),
             },
-        )
+        ) #can change if want more metrics
 
-        return output, aux_outputs, stats
+        return output, aux_outputs

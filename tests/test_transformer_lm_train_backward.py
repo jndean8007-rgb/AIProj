@@ -1,6 +1,7 @@
 import torch as t
 import torch.nn.functional as F
 
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.model import TransformerLM
 
@@ -90,13 +91,16 @@ def test_transformer_lm_train_backward():
     # Forward
     # ----------------------------
 
-    out = model(
-        token_ids,
+    meta = BatchMeta(
+        token_ids=token_ids,
         cu_seqlens=cu_seqlens,
-        batch_max_seq_len=batch_max_seq_len,
         token_positions=token_positions,
+        max_seqlen=batch_max_seq_len,
         mode="train",
+        cache_context=None,
     )
+
+    out = model(meta)
 
     # ----------------------------
     # Output contract
@@ -107,12 +111,17 @@ def test_transformer_lm_train_backward():
         config.vocab_size,
     )
 
-    assert len(out.moe_stats) == config.num_layers
+    # Every layer's balance loss reaches the top, namespaced by layer. A missing key
+    # means a merge result was dropped somewhere between the MoE and the model.
+    assert set(out.aux_outputs.losses) == {
+        f"layers.{i}.ffn.balance" for i in range(config.num_layers)
+    }
 
-    assert out.aux_loss.ndim == 0
+    aux_loss = out.aux_outputs.total_loss({"balance": 0.01})
+    assert aux_loss.ndim == 0
 
     assert t.isfinite(out.logits).all()
-    assert t.isfinite(out.aux_loss)
+    assert t.isfinite(aux_loss)
 
     # ----------------------------
     # Training loss
@@ -123,7 +132,7 @@ def test_transformer_lm_train_backward():
         targets,
     )
 
-    loss = lm_loss + 0.01 * out.aux_loss
+    loss = lm_loss + aux_loss
 
     assert t.isfinite(loss)
 

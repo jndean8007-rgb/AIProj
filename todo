@@ -1,28 +1,10 @@
-src/torch_llm/
-├── inference/
-│   ├── kvcache_config.py          CHANGE
-│   ├── paged_kv_cache.py          CHANGE
-│   ├── cache_manager.py           NO CHANGE
-│   └── runtime.py                 essentially NO CHANGE
-│
-├── model/
-│   └── attention.py               SMALL CHANGE
-│
-└── kernals/
-    └── attention/
-        └── decode.py              CHANGE
 
-1. Extend PagedKVCache storage with scales
-        ↓
-2. Implement quantized append kernel
-        ↓
-3. Verify quantize → dequantize error against BF16
-        ↓
-4. Modify paged decode kernel to load scales/dequantize
-        ↓
-5. End-to-end cached inference test
-        ↓
-6. Benchmark memory + decode throughput
+
+
+
+
+
+
 
 
 

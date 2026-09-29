@@ -66,8 +66,15 @@ def load_main_setup():
 
 def train_forward(model, token_ids, cu_seqlens, positions, max_seqlen):
     """Training-mode forward -> (logits [T, V], aux_loss). Update here when the model signature changes."""
-    output = model(token_ids, cu_seqlens, positions, max_seqlen, mode="train")
-    return output.logits, output.aux_loss
+    from torch_llm.core.batch_meta import BatchMeta
+
+    meta = BatchMeta(
+        token_ids=token_ids, cu_seqlens=cu_seqlens, token_positions=positions,
+        max_seqlen=max_seqlen, mode="train", cache_context=None,
+    )
+    output = model(meta)
+    # Weight 1.0 on "balance" reproduces the recorded value: the mean of the per-layer balance losses.
+    return output.logits, output.aux_outputs.total_loss({"balance": 1.0})
 
 
 def capture_training_forward(model, tokenizer):

@@ -1,6 +1,8 @@
 import torch as t
 import torch.nn.functional as F
 
+from torch_llm.core.batch_meta import BatchMeta
+from torch_llm.data_pipeline.pack_training import PackedTrainingBatch
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.model import TransformerLM
 from torch_llm.training.optim.build import build_optimizers
@@ -98,13 +100,24 @@ def test_overfit_tiny_batch():
         dtype=t.long,
     )
 
-    batch = {
-        "token_ids": token_ids,
-        "targets": targets,
-        "cu_seqlens": cu_seqlens,
-        "token_positions": token_positions,
-        "batch_max_seq_len": batch_max_seq_len,
-    }
+    packed_batch = PackedTrainingBatch(
+        token_ids=token_ids,
+        targets=targets,
+        cu_seqlens=cu_seqlens,
+        token_positions=token_positions,
+        batch_max_seq_len=batch_max_seq_len,
+    )
+
+    batch_meta = BatchMeta(
+        token_ids=token_ids,
+        cu_seqlens=cu_seqlens,
+        token_positions=token_positions,
+        max_seqlen=batch_max_seq_len,
+        mode="train",
+        cache_context=None,
+    )
+
+    aux_loss_weights = {"balance": 0.01}
 
     # -------------------------------------------------
     # 4. Optimizers
@@ -142,13 +155,7 @@ def test_overfit_tiny_batch():
     # -------------------------------------------------
 
     with t.no_grad():
-        out = model(
-            token_ids=token_ids,
-            cu_seqlens=cu_seqlens,
-            token_positions=token_positions,
-            batch_max_seq_len=batch_max_seq_len,
-            mode="train",
-        )
+        out = model(batch_meta)
 
         initial_lm_loss = F.cross_entropy(
             out.logits.float(),
@@ -166,10 +173,11 @@ def test_overfit_tiny_batch():
 
         metrics = train_step(
             model,
-            batch,
+            packed_batch,
+            batch_meta,
             muon,
             adamw,
-            aux_loss_weight=0.01,
+            aux_loss_weights=aux_loss_weights,
             max_grad_norm=1.0,
             muon_scheduler=muon_scheduler,
             adamw_scheduler=adamw_scheduler,
@@ -182,13 +190,13 @@ def test_overfit_tiny_batch():
             print(
                 f"step={step:3d} "
                 f"lm_loss={final_lm_loss:.4f} "
-                f"aux={metrics.aux_loss.item():.4f}"
+                f"aux={metrics.aux_outputs.total_loss(aux_loss_weights).item():.4f}"
             )
 
     print(
         step,
         metrics.lm_loss.item(),
-        metrics.aux_loss.item(),
+        metrics.aux_outputs.total_loss(aux_loss_weights).item(),
     )
 
     # -------------------------------------------------
