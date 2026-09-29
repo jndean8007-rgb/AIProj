@@ -16,6 +16,11 @@ Develop, verify, and test a modern LLM systems implementation, with emphasis on 
 - When a decision supersedes an older one, mark the old one **Superseded**, link the new one, and state what changed.
 - Keep entries short. Edit this doc freely; it is not production code.
 
+## Keeping `todo` current (Claude's job)
+
+- Whenever work begins toward a new architectural goal, add its details to `todo` at the repository root: the goal, why it matters, the components and contracts involved, the ordered steps, the tests that define done, and each step's status.
+- Update the entry as steps are agreed, implemented, or verified. Keep it short; `docs/LLM_SYSTEM_HANDOFF.md` remains the record of decisions.
+
 ## Architecture and collaboration
 
 - Explain the purpose of an abstraction before changing or implementing it.
@@ -24,6 +29,7 @@ Develop, verify, and test a modern LLM systems implementation, with emphasis on 
 - Prefer the durable target architecture when it is reasonably clear. Do not simplify an architecture merely because the simpler version is easier to implement.
 - When comparing designs, explain what each preserves, loses, or postpones, and what later refactor would be required.
 - Do not silently change architecture.
+- **Rewriting existing code is expected whenever it is genuinely useful.** Extensibility means new components are easy to add; it never means earlier code is frozen or must be designed around. Recommend a rewrite whenever it gives a better design, and never avoid, discourage, or work around a worthwhile rewrite to keep old code untouched.
 
 ## Implementation workflow
 

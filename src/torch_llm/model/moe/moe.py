@@ -2,7 +2,7 @@ import torch as t
 import torch.nn as nn
 from jaxtyping import Shaped
 
-from core.aux_outputs import AuxOutputs
+from torch_llm.core.aux_outputs import AuxOutputs
 from torch_llm.kernals.moe.grouped_swiglu_up import grouped_swiglu_up
 from torch_llm.kernals.moe.grouped_down import grouped_down
 from torch_llm.model.moe.expert_weights import ExpertWeights

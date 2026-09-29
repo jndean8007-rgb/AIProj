@@ -1,13 +1,47 @@
+EVERY NEW IMPLEMENTATION DETAIL MUST UPDATE TODO
 
 
+== CURRENT GOAL: Phase 0b - extensibility refactor (behavior-preserving) ==
+Why: later components (KDA, MLA/DSA, LatentMoE, Engram, MTP, AttnRes) should be easy to add
+(new file + registry line + config value). Rewriting earlier code is expected whenever it is
+genuinely better (D16).
+Design: docs/GOAL_ARCHITECTURE.md section 4; decisions D13-D15 in docs/LLM_SYSTEM_HANDOFF.md.
+Exit: full suite green, and tests/test_phase0b_golden.py green (greedy generation
+token-identical to the pre-refactor recording).
+
+[done]    0. Golden outputs recorded (tests/golden/phase0b_reference.pt, e7c5d1b)
+[done]    1. BatchMeta + AuxOutputs in torch_llm/core/ (6b769b2); tests/test_core_contracts.py
+             not yet run on GPU machine
+[current] 2. Interfaces, registries, LayerSpec, generic block (D15)
+[ ]       3. StateManager / StateSpec / LayerStateView replace direct cache access;
+             BatchMeta.cache_context removed
+[ ]       4. Kernel dispatch layer (reference + fast impls selected by device/dtype)
+[ ]       5. DeviceMesh hook, versioned configs (schema_version), generic contract suites
+
+Step 2 details
+  - core/interfaces.py: SequenceMixer, FeedForward, TokenMemory, Residual, OutputHead
+    (runtime_checkable Protocols) + MixerCaps (frozen). Every sublayer returns
+    (update [T,D], AuxOutputs).
+  - core/registry.py: Registry + MIXERS, FFNS, RESIDUALS, TOKEN_MEMORIES, OUTPUT_HEADS.
+    model/components.py imports all implementation modules so they register.
+  - Constructors: mixers/FFNs/memories (config, layer_idx); residual (config);
+    head (config, embedding).
+  - Registered now: MIXERS "gqa", FFNS "moe", RESIDUALS "standard", OUTPUT_HEADS "lm".
+  - ModelConfig: LayerSpec(mixer, ffn, memory=None); layers defaults to num_layers copies;
+    residual="standard"; output_head="lm".
+  - Generic block: residual.read -> norm -> mixer -> residual.write -> norm -> ffn -> write.
+    Residual lives at model level; write never in place.
+  - LM head owns the final norm.
+  - MixerCaps: set a flag only once a contract test proves it (GQA: needs_positions only).
+  - Router bias update moves from forward to FeedForward.post_step();
+    TransformerLM.post_step() called by the trainer once per optimizer step.
+  - Checkpoint keys renamed (attention->mixer, attn_norm->mixer_norm, moe->ffn,
+    moe_norm->ffn_norm, final_norm->head.norm, lm_head->head.proj);
+    model/checkpoint_migration.py::migrate_state_dict, applied in generate_setup.
+  - Tests: tests/test_model_contracts.py (+ golden + existing suite stay green).
 
 
-
-
-
-
-
-
+== LATER / NOTES ==
 large-scale:
 sharded/streaming dataset
 → deterministic shard/document partitioning

@@ -14,7 +14,7 @@
 - multi-GPU scaling
 
 The final version adds two rules:
-- the **extensibility contract** (§4): code for earlier phases is never rewritten to integrate later ones
+- the **extensibility contract** (§4): later components are easy to add; earlier code is rewritten whenever that is genuinely better (see D16)
 - the **hardware-independent target** (principle 6): the architecture is never shaped by the developer's own GPU
 
 ---
@@ -113,13 +113,17 @@ There is no single "most modern architecture". The top labs disagree on attentio
 4. **Scale-agnostic code.** Every training component takes a `DeviceMesh` from the start. One GPU is simply a mesh of size 1 (§6.2).
 5. **Durable abstractions before fast paths.** The state manager covers KV, recurrent and lookup state from the start.
 6. **The target doesn't depend on hardware.** The architecture is chosen for what is modern and instructive, never for what fits a particular development GPU. Hardware only decides which *config size* and which *kernel implementation* runs on a given machine. It never decides which components exist. Any precision or kernel the machine can't run natively falls back to its reference or emulated path, and the model definition stays the same.
-7. **Extend, never rewrite.** See §4. Every later phase plugs into interfaces that exist from Phase 0.
+7. **Easy to extend, free to rewrite.** See §4. **Rewriting earlier code is expected, not avoided.** Whenever rewriting existing code makes the design genuinely better (clearer ownership, a better interface, a more modern approach, removing a workaround), rewrite it. Extensibility means new components are *easy* to add; it never means old code is frozen. Interfaces themselves can and should change when a better design appears.
 
 ---
 
-## 4. Extensibility contract: extend, never rewrite
+## 4. Extensibility contract
 
-**Goal:** each phase *adds* files, registry entries and config values. It never rewrites code from an earlier phase to make room. The interfaces below are created in Phase 0, and the current GQA/MoE code becomes their first implementation, with behavior unchanged. After that, GDN, KDA, MLA, DSA, CSA/HCA, LatentMoE, Engram, MTP, AttnRes/mHC and the distributed code all plug in rather than getting woven in.
+**Goal:** adding a component should usually be a new file, a registry entry and a config value, so later phases aren't blocked by tangled code.
+
+**Rewriting earlier code is expected, not avoided.** Whenever rewriting existing code makes the design genuinely better (clearer ownership, a better interface, a more modern approach, removing a workaround), rewrite it. Extensibility means new components are *easy* to add; it never means old code is frozen. Interfaces themselves can and should change when a better design appears.
+
+The interfaces below are created in Phase 0, and the current GQA/MoE code becomes their first implementation, with behavior unchanged. After that, GDN, KDA, MLA, DSA, CSA/HCA, LatentMoE, Engram, MTP, AttnRes/mHC and the distributed code all plug in rather than getting woven in.
 
 ### 4.1 Rules
 
@@ -416,7 +420,7 @@ Each phase has exit criteria.
   - *Exit:* the existing suite passes unchanged, and greedy generation is token-identical before and after.
 
 **Phase 1: Model core I**
-- QK-norm, gated attention, **MLA**, **LatentMoE**, **Block AttnRes** and **mHC**. Each is added as a registered component; nothing from Phase 0 is rewritten.
+- QK-norm, gated attention, **MLA**, **LatentMoE**, **Block AttnRes** and **mHC**. Each is added as a registered component, and Phase 0 code is revised wherever the new component shows a better design.
 - Tier-S ablations: each feature against the current baseline, and AttnRes against mHC.
 - *Exit:* reference-vs-kernel tests pass, and there's an ablation table.
 
