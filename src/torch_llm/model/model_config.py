@@ -2,7 +2,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class LayerSpec:
-
+    mixer: str = 'gqa'
+    ffn: str = 'moe'
+    memory: str | None = None #will be tpye of memory entries
 
 @dataclass
 class ModelConfig:
@@ -31,18 +33,15 @@ class ModelConfig:
     output_head: str = "lm"
 
     def __post_init__(self):
+        for name in ("d_model", "d_ff", "num_layers", "num_q_heads", "num_kv_heads", "num_experts"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be greater than 0")
+
         if not self.num_q_heads % self.num_kv_heads == 0:
             raise ValueError("num_q_heads must be divisible by num_kv_heads")
 
         if not 1 <= self.top_k <= self.num_experts:
             raise ValueError("top_k must be between 1 and num_experts")
-
-        if not self.d_model > 0:
-            raise ValueError("d_model must be greater than 0")
-        if not self.d_ff > 0:
-            raise ValueError("d_ff must be greater than 0")
-        if not self.num_layers > 0:
-            raise ValueError("num_layers must be greater than 0")
 
         if self.layers is not None:
             if not len(self.layers) == self.num_layers:
@@ -50,4 +49,5 @@ class ModelConfig:
             self.layers = [LayerSpec(**e) if isinstance(e, dict) else e for e in self.layers]
         else:
             self.layers = [LayerSpec() for _ in range(self.num_layers)]
+
 

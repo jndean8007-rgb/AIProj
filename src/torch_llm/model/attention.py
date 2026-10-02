@@ -3,12 +3,15 @@ import torch.nn as nn
 from jaxtyping import Shaped
 from einops import rearrange, reduce, repeat, pack, unpack
 
+from core.aux_outputs import AuxOutputs
+from core.interfaces import MixerCaps
+from model import model_config
 from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.rope import RoPE
 from torch_llm.kernals.flash_attention import FlashAttentionFunction
 from torch_llm.inference.kv_cache import KVCache
 from torch_llm.kernals.decode_attention import decode_attention_wrapper
-from typing import Literal
+from torch_llm.core.registry import MIXERS
 
 '''
 prefill
@@ -23,16 +26,24 @@ compute new K/V
 
 
 '''
+@MIXERS.register("gqa")
 class Attention(nn.Module):
+    capabilites= MixerCaps(needs_positions=True)
+
     def __init__(self,
-                 d_model,
-                 num_q_heads,
-                 num_kv_heads,
-                 head_dim,
-                 model_max_seq_len,
-                 theta: float = 10000.0,
+                 config,
+                 layer_idx,
                  ):
         super().__init__()
+        d_model = config.d_model
+        num_q_heads = config.num_q_heads
+        num_kv_heads = config.num_kv_heads
+        head_dim = config.head_dim
+        model_max_seq_len = config.model_max_seq_len
+        theta = config.rope_theta
+
+        self.layer_idx = layer_idx
+
         self.d_model = d_model
         self.num_q_heads = num_q_heads
         self.num_kv_heads = num_kv_heads
@@ -49,7 +60,7 @@ class Attention(nn.Module):
                 batch_meta: BatchMeta,
                 paged_kv_cache = None,
                 attention_mask=None,
-                ):
+                ) -> tuple[t.Tensor, AuxOutputs]:
 
         q = self.q_proj(x)
         k = self.k_proj(x)
@@ -106,7 +117,9 @@ class Attention(nn.Module):
 
         attention_output = rearrange(attention_output, 'T h d -> T (h d)')
 
-        return self.o_proj(attention_output)
+        aux_outputs = AuxOutputs()
+
+        return self.o_proj(attention_output), aux_outputs
 
 
 

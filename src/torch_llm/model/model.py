@@ -24,8 +24,8 @@ class TransformerLM(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                DecoderBlock(config)
-                for _ in range(config.num_layers)
+                DecoderBlock(config, layer_idx)
+                for layer_idx in range(config.num_layers)
             ]
         )
 

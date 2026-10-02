@@ -2,6 +2,7 @@ import torch as t
 import torch.nn as nn
 from jaxtyping import Shaped
 
+from core.batch_meta import BatchMeta
 from torch_llm.core.aux_outputs import AuxOutputs
 from torch_llm.kernals.moe.grouped_swiglu_up import grouped_swiglu_up
 from torch_llm.kernals.moe.grouped_down import grouped_down
@@ -11,17 +12,23 @@ from torch_llm.model.moe.router import Router
 from torch_llm.model.moe.dispatch import dispatch
 from torch_llm.model.moe.moe_stats import MoeStats
 
+from torch_llm.core.registry import FFNS
+
+@FFNS.register("moe")
 class MoE(nn.Module):
     def __init__(
             self,
-            num_experts,
-            top_k,
-            d_model,
-            d_ff,
-            bias_lr,
-            beta
+            config,
+            layer_idx
     ):
         super().__init__()
+        num_experts = config.num_experts
+        top_k = config.top_k
+        d_model = config.d_model
+        d_ff = config.d_ff
+        bias_lr = config.router_bias_lr
+        beta = config.router_beta
+        self.layer_idx = layer_idx
 
         self.num_experts = num_experts
         self.top_k = top_k
@@ -41,7 +48,7 @@ class MoE(nn.Module):
         )
 
 
-    def forward(self, x: Shaped[t.Tensor, 'T d_model']):
+    def forward(self, x: Shaped[t.Tensor, 'T d_model'], meta: BatchMeta) -> tuple[t.Tensor, AuxOutputs]:
 
         T = x.shape[0]
         expert_indices, routing_weights, router_probs = self.router(x)

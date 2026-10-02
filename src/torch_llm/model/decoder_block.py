@@ -11,8 +11,10 @@ from torch_llm.model.attention import Attention
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_idx: int):
         super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
 
         self.attn_norm = RMSNorm(
             d_model=config.d_model,
@@ -20,12 +22,8 @@ class DecoderBlock(nn.Module):
         )
 
         self.attention = Attention(
-            d_model=config.d_model,
-            num_q_heads=config.num_q_heads,
-            num_kv_heads=config.num_kv_heads,
-            head_dim=config.head_dim,
-            model_max_seq_len=config.model_max_seq_len,
-            theta=config.rope_theta
+            config=config,
+            layer_idx=layer_idx,
         )
 
         self.moe_norm = RMSNorm(
@@ -34,12 +32,8 @@ class DecoderBlock(nn.Module):
         )
 
         self.moe = MoE(
-            num_experts=config.num_experts,
-            top_k=config.top_k,
-            d_model=config.d_model,
-            d_ff=config.d_ff,
-            bias_lr=config.router_bias_lr,
-            beta=config.router_beta
+            config=config,
+            layer_idx=layer_idx,
         )
 
 
