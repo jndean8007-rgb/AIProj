@@ -39,6 +39,15 @@ Step 2 details
     moe_norm->ffn_norm, final_norm->head.norm, lm_head->head.proj);
     model/checkpoint_migration.py::migrate_state_dict, applied in generate_setup.
   - Tests: tests/test_model_contracts.py (+ golden + existing suite stay green).
+  Checks to watch for:
+  - LM head ties by sharing the Parameter, not by storing the embedding module
+    (a stored module adds a head.embedding.weight key that old checkpoints lack).
+  - Keep parameter registration order (norm, mixer, norm, ffn; head.norm then head.proj),
+    so saved optimizer state still lines up with parameters on resume.
+  - Routing statistics: accumulate expert counts (not fractions) in training forwards only;
+    the accumulators are non-persistent buffers, reset in post_step.
+  - ModelConfig with LayerSpec must still save to JSON (checkpoint.py dumps __dict__).
+  - migrate_state_dict also needed when resuming training (training/checkpoint.py), not just generate_setup.
 
 
 == LATER / NOTES ==
