@@ -18,8 +18,9 @@ Develop, verify, and test a modern LLM systems implementation, with emphasis on 
 
 ## Keeping `todo` current (Claude's job)
 
-- Whenever work begins toward a new architectural goal, add its details to `todo` at the repository root: the goal, why it matters, the components and contracts involved, the ordered steps, the tests that define done, and each step's status.
-- Update the entry as steps are agreed, implemented, or verified. Keep it short; `docs/LLM_SYSTEM_HANDOFF.md` remains the record of decisions.
+- `todo` at the repository root describes only the step currently being worked on, as a specific checklist: the concrete tasks (files, contracts, changes), the checks to watch for, and the tests that define done. Mark items as they are completed.
+- When a step finishes, replace its checklist with the next step's. The broader phase plan and decisions live in `docs/LLM_SYSTEM_HANDOFF.md`, not in `todo`.
+- Keep the user's own notes in `todo` untouched.
 
 ## Architecture and collaboration
 

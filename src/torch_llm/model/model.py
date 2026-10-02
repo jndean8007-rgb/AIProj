@@ -13,7 +13,7 @@ from torch_llm.model.rmsnorm import RMSNorm
 class TransformerLM(nn.Module):
     def __init__(
             self,
-            config:ModelConfig,
+            config: ModelConfig,
     ):
         super().__init__()
 
@@ -40,7 +40,7 @@ class TransformerLM(nn.Module):
             bias=False
         )
 
-        #potentially temporary weight tying
+        # potentially temporary weight tying
         self.lm_head.weight = self.embedding.weight
 
         nn.init.normal_(
@@ -52,9 +52,8 @@ class TransformerLM(nn.Module):
     def forward(
             self,
             batch_meta: BatchMeta,
-            paged_kv_caches= None,
+            paged_kv_caches=None,
     ):
-
         aux_outputs = AuxOutputs()
 
         x = self.embedding(batch_meta.token_ids)
@@ -74,7 +73,7 @@ class TransformerLM(nn.Module):
 
         logits = self.lm_head(x)
 
-        #aux_loss = t.stack([stat.aux_loss for stat in moe_stats]).mean()
+        # aux_loss = t.stack([stat.aux_loss for stat in moe_stats]).mean()
 
         return ModelOutputs(
             logits=logits,

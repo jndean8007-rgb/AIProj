@@ -1,5 +1,7 @@
-import torch as t
+import dataclasses
 import json
+
+import torch as t
 
 from torch_llm.data_pipeline.bpe_tokenizer import BPETokenizer
 from torch_llm.model.model_config import ModelConfig
@@ -29,9 +31,9 @@ def save_checkpoint(
 
     with open(f"{config_path}.json", "w") as f:
         json.dump({
-            "ModelConfig": model_config.__dict__,
-            "TrainConfig": train_config.__dict__,
-            "TokenizerConfig": tokenizer_config.__dict__,
+            "ModelConfig": dataclasses.asdict(model_config),
+            "TrainConfig": dataclasses.asdict(train_config),
+            "TokenizerConfig": dataclasses.asdict(tokenizer_config),
         }, f)
 
 def load_checkpoint(
