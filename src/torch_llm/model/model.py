@@ -8,6 +8,7 @@ from torch_llm.model.decoder_block import DecoderBlock
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.outputs import ModelOutputs
 from torch_llm.model.rmsnorm import RMSNorm
+import torch_llm.model.components
 
 
 class TransformerLM(nn.Module):

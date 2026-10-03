@@ -14,7 +14,7 @@ class Registry:
 
     def get(self, name):
         if name not in self.registry:
-            raise ValueError("Name must be in registry")
+            raise KeyError(f"{name} is not in registry")
         return self.registry.get(name)
 
     def names(self):

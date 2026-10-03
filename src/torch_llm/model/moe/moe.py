@@ -4,15 +4,13 @@ from jaxtyping import Shaped
 
 from core.batch_meta import BatchMeta
 from torch_llm.core.aux_outputs import AuxOutputs
-from torch_llm.kernals.moe.grouped_swiglu_up import grouped_swiglu_up
-from torch_llm.kernals.moe.grouped_down import grouped_down
+from torch_llm.core.registry import FFNS
+from torch_llm.model.moe.dispatch import dispatch
 from torch_llm.model.moe.expert_weights import ExpertWeights
 from torch_llm.model.moe.moe_autograd import MoeAutograd
-from torch_llm.model.moe.router import Router
-from torch_llm.model.moe.dispatch import dispatch
 from torch_llm.model.moe.moe_stats import MoeStats
+from torch_llm.model.moe.router import Router
 
-from torch_llm.core.registry import FFNS
 
 @FFNS.register("moe")
 class MoE(nn.Module):

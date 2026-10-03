@@ -3,13 +3,11 @@ import torch.nn as nn
 from jaxtyping import Shaped
 from einops import rearrange, reduce, repeat, pack, unpack
 
-from core.aux_outputs import AuxOutputs
+from torch_llm.core.aux_outputs import AuxOutputs
 from core.interfaces import MixerCaps
-from model import model_config
 from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.rope import RoPE
 from torch_llm.kernals.flash_attention import FlashAttentionFunction
-from torch_llm.inference.kv_cache import KVCache
 from torch_llm.kernals.decode_attention import decode_attention_wrapper
 from torch_llm.core.registry import MIXERS
 
@@ -28,7 +26,7 @@ compute new K/V
 '''
 @MIXERS.register("gqa")
 class Attention(nn.Module):
-    capabilites= MixerCaps(needs_positions=True)
+    capabilities= MixerCaps(needs_positions=True)
 
     def __init__(self,
                  config,

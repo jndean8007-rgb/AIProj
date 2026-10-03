@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 
 @dataclass(frozen=True)
 class LayerSpec:
@@ -28,7 +29,7 @@ class ModelConfig:
     router_beta: float = 0.9
     router_bias_lr: float = 0.01
 
-    layers: list[LayerSpec] | None = None
+    layers: list[LayerSpec] = field(default_factory=list)
     residual: str = "standard"
     output_head: str = "lm"
 
