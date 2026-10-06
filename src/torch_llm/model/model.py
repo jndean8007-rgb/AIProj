@@ -4,11 +4,11 @@ from jaxtyping import Shaped
 
 from torch_llm.core.aux_outputs import AuxOutputs
 from torch_llm.core.batch_meta import BatchMeta
+from torch_llm.core.registry import OUTPUT_HEADS, RESIDUALS
 from torch_llm.model.decoder_block import DecoderBlock
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.outputs import ModelOutputs
-from torch_llm.model.rmsnorm import RMSNorm
-import torch_llm.model.components
+import torch_llm.model.components  # noqa: F401  (imports every component so the registries are filled)
 
 
 class TransformerLM(nn.Module):
@@ -23,6 +23,9 @@ class TransformerLM(nn.Module):
             config.d_model
         )
 
+        # Built once with the model; the stream itself is created per forward by residual.init.
+        self.residual = RESIDUALS.get(config.residual)(config)
+
         self.blocks = nn.ModuleList(
             [
                 DecoderBlock(config, layer_idx)
@@ -30,19 +33,9 @@ class TransformerLM(nn.Module):
             ]
         )
 
-        self.final_norm = RMSNorm(
-            d_model=config.d_model,
-            eps=config.rms_eps
-        )
-
-        self.lm_head = nn.Linear(
-            config.d_model,
-            config.vocab_size,
-            bias=False
-        )
-
-        # potentially temporary weight tying
-        self.lm_head.weight = self.embedding.weight
+        # Owns the final norm and ties its projection to the embedding (replaces final_norm + lm_head).
+        # Built after the blocks so parameter order matches the old layout.
+        self.head = OUTPUT_HEADS.get(config.output_head)(config, self.embedding)
 
         nn.init.normal_(
             self.embedding.weight,
@@ -70,11 +63,8 @@ class TransformerLM(nn.Module):
 
             aux_outputs = aux_outputs.merged(new_aux_outputs, prefix=f"layers.{layer_idx}")
 
-        x = self.final_norm(x)
-
-        logits = self.lm_head(x)
-
-        # aux_loss = t.stack([stat.aux_loss for stat in moe_stats]).mean()
+        logits, head_aux_outputs = self.head(x, batch_meta)
+        aux_outputs = aux_outputs.merged(head_aux_outputs, prefix="head")
 
         return ModelOutputs(
             logits=logits,
