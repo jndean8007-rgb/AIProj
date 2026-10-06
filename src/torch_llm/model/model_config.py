@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 
 @dataclass(frozen=True)
@@ -6,6 +6,13 @@ class LayerSpec:
     mixer: str = 'gqa'
     ffn: str = 'moe'
     memory: str | None = None #will be tpye of memory entries
+
+    @property
+    def num_sublayers(self) -> int:
+        return sum(
+            getattr(self, field.name) is not None
+            for field in fields(self)
+        )
 
 @dataclass
 class ModelConfig:
@@ -52,3 +59,9 @@ class ModelConfig:
             self.layers = [LayerSpec() for _ in range(self.num_layers)]
 
 
+    @property
+    def sublayer_indices(self) -> list[int]:
+        cumidx = [0]
+        for layer in self.layers:
+            cumidx.append(cumidx[-1] + layer.num_sublayers)
+        return cumidx.copy()

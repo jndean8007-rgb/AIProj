@@ -36,8 +36,6 @@ class DecoderBlock(nn.Module):
         )
 
 
-
-
     def forward(
             self,
             x: Shaped[t.Tensor, 'T D'],
