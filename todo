@@ -1,38 +1,129 @@
 EVERY NEW IMPLEMENTATION DETAIL MUST UPDATE TODO
 
 
-[ ] 2. Convert the golden checkpoint (D17). Nothing to write, just run:
-        python scripts/convert_phase0b_checkpoint.py checkpoints/HuggingFaceFW/fineweb-edu/13000.pth
-      Convert any other checkpoint you still want to load or resume the same way.
-      The original is kept as <file>.pre_step2.bak.
+== NOW: finish step 2 (D15) - post_step fixes ==
+Review of 3c58986 (GitHub). Blocking:
+  [ ] moe.py:59,119,132  the input was renamed to `state`, but these lines still use `x`: NameError
+  [ ] moe.py:148         post_step must do nothing when nothing was accumulated (eval-only forwards,
+                         or a second post_step); it currently divides None by 0
+  [ ] model.py:85        block.fnn -> block.ffn
+Done: test_router_bias_updates_only_in_post_step (GPU, see DEFERRED).
 
-[ ] 3. Golden test on the GPU: pytest tests/test_phase0b_golden.py
-      Passing = the refactor changed no numbers. If values differ: check that both sublayers
-      read and write through the residual, the order of the additions, and which norm feeds which.
 
-[ ] 4. post_step: the router bias update leaves forward
-      What: each MoE router keeps one bias per expert that nudges tokens toward under-used
-        experts; it is adjusted from how many tokens each expert received. That adjustment should
-        happen once per optimizer step, but forward runs a variable number of times per step
-        (evaluation, gradient accumulation, activation recomputation). So forward only records
-        the counts, and post_step(), called once per step, applies them.
+== NEXT: Phase 0b step 3 - engine-owned state (D18) ==
+Why: today attention receives a raw per-layer cache plus BatchMeta.cache_context and writes into
+the cache itself, and the runtime builds those caches separately from the page bookkeeping. The
+target (GOAL_ARCHITECTURE section 4, rule 3) is: a mixer only DECLARES what state it needs; one
+engine object, the StateManager, allocates it, owns every request's length, and gives each layer
+a small view for the current batch. Later state kinds (MLA latent KV, KDA recurrent state, sliding
+windows) then plug in as new specs + storage, with no change to attention or the runtime.
+Behavior is unchanged: same storage, same kernels, same numbers.
+Done when: tests/test_state_contracts.py passes (CPU: runs on the laptop), the two state tests in
+tests/test_model_contracts.py pass (CPU), and the DEFERRED GPU list passes.
 
-      Contract:
-        MoE.forward: when self.training, add this batch's expert counts [E] into a non-persistent
-          buffer, and T * top_k into a running Python int (a plain int avoids a GPU sync).
-          No bias update in forward any more.
-        MoE.post_step() -> None: if anything was accumulated: f = counts / total;
-          self.router.update_expert_bias(f); reset both. Nothing accumulated -> no-op.
-          Eval forwards never accumulate.
-        TransformerLM.post_step() -> None: calls post_step() on every block's ffn.
-        train_step: calls model.post_step() once, after muon.step() and adamw.step().
-      Same training result as today with one forward per step: the bias only affects which
-        experts are selected, and selection passes no gradient.
-      Files: model/moe/moe.py, model/model.py, training/train_step.py
+[ ] 3.1 Shared state types - core/state.py (new; imports nothing from model/ or inference/)
+      FullKVSpec(num_kv_heads: int, head_dim: int): frozen dataclass; both must be positive ints
+        (bools rejected) else ValueError. Means: per request, per token, K and V of [num_kv_heads,
+        head_dim]. Class attribute kind = "full_kv".
+      PagedKVRead: frozen dataclass, everything a paged-attention kernel needs to read one layer:
+        k, v              [num_blocks, block_size, H_kv, D]
+        k_scales, v_scales [num_blocks, block_size, H_kv], or None when the storage is unquantized
+        block_table       [max_slots, max_blocks_per_request] int32 (the allocator's full table)
+        slots             [B] long, each request's slot row in block_table
+        context_lengths   [B], committed tokens + this batch's tokens, per request
+        block_size        int
+      FullKVView: runtime_checkable Protocol with
+        append(k: [T, H_kv, D], v: [T, H_kv, D]) -> None   writes this batch's tokens
+        read() -> PagedKVRead
+      Done: test_full_kv_spec_* in tests/test_state_contracts.py.
 
-[ ] 5. Full suite on the GPU, then tell Claude. Claude updates the tests that fail only because of
-      renamed attributes or new signatures, marks D15 Implemented, and replaces this checklist
-      with step 3's.
+[ ] 3.2 Engine state owner - inference/page_allocator.py, inference/state_manager.py
+      page_allocator.py: rename cache_manager.py -> page_allocator.py and KVCacheManager ->
+        PageAllocator; keep its slot/page bookkeeping and CacheCapacityError. Delete
+        initialize_cache, append_request, create_container and CacheContainer (replaced below).
+        Add truncate(request_id, length): requires 0 <= length <= current length (ValueError
+        otherwise); lowers the host and device lengths; the pages stay reserved.
+      state_manager.py:
+        StateSnapshot(request_id: int, length: int): frozen dataclass.
+        PagedKVView(storage, blocks, offsets, read): append(k, v) calls
+          storage.append_kv(blocks, offsets, k, v); read() returns the PagedKVRead.
+        StateManager(layer_specs: list[list[spec]], config: KVCacheConfig, device):
+          owns one PageAllocator built from config, and storage[layer][j] = a PagedKVCache for
+          each FullKVSpec (dtype config.kv_cache_dtype, scales config.kv_scale_dtype).
+          can_reserve(capacity) -> bool    a free slot AND enough free pages, right now
+          fits_in_pool(capacity) -> bool   capacity <= max_seq_len AND its pages <= all pages
+          reserve(request_id, capacity)    1st call takes a slot; later calls grow capacity;
+                                           all-or-nothing (CacheCapacityError, nothing taken)
+          commit(request_ids, num_tokens)  = today's advance_batch
+          seq_len(request_id) -> int
+          truncate(request_id, length)
+          snapshot(request_id) -> StateSnapshot(request_id, current length)
+          restore(snapshot)                truncate back to snapshot.length; ValueError if the
+                                           request now has fewer tokens than that
+          free(request_id); request_ids() -> list[int]; clear()
+          layer_states(request_ids, cu_seqlens, token_positions) -> list[tuple[view, ...]]
+            one tuple per layer, one view per spec of that layer. Locations and context lengths
+            are computed ONCE per batch and shared by every layer's view. Reads no device values
+            (no .item()/.tolist() on GPU tensors). context_lengths = device seq_lens[slots] +
+            this batch's per-request token counts, so call it BEFORE commit.
+          Unknown request -> KeyError.
+        Why snapshot/restore are just lengths: K/V is append-only, so rolling back = forgetting
+          the tail. Recurrent kinds (KDA, later) will copy their state in snapshot instead; the
+          API stays the same.
+      paged_kv_cache.py: unchanged (it IS the full-KV storage).
+      Done: all of tests/test_state_contracts.py (CPU).
+
+[ ] 3.3 Model side - core/interfaces.py, core/batch_meta.py, model/attention.py, model/moe/moe.py,
+        model/decoder_block.py, model/model.py, kernals/decode_attention.py
+      SequenceMixer protocol: add state_specs(self) -> list (empty list = stateless);
+        forward(x, meta, state): state = tuple of views in state_specs() order, or None in training.
+      GQA:
+        state_specs() -> [FullKVSpec(config.num_kv_heads, config.head_dim)]
+        rename the input back from `state` to `x` (`state` is now the views argument; the residual
+          state is a third, different thing). Same for MoE's input.
+        train: state is None. prefill: (kv,) = state; flash attention on this batch's k/v, then
+          kv.append(k_rope, v). decode: kv.append(k_rope, v), then
+          decode_attention_wrapper(q_rope, kv.read()).
+      decode_attention_wrapper(q, kv: PagedKVRead): take k, v, scales, block_table, slots,
+        context_lengths, block_size from kv (instead of paged_kv_cache + cache_batch_context);
+        quantized = kv.k_scales is not None. Kernel body unchanged.
+      DecoderBlock.forward(state, residual, meta, layer_state=None): mixer(x, meta, layer_state).
+      TransformerLM.forward(meta, states=None): states[i] goes to block i; None in training.
+        TransformerLM.state_specs() -> [block.mixer.state_specs() for each block].
+      BatchMeta: remove cache_context and its validation rules (D14 marked it transitional).
+      Done: test_gqa_declares_its_kv_state, test_model_state_specs_list_every_layer (CPU).
+
+[ ] 3.4 Runtime - inference/runtime.py
+      __init__: self.state_manager = StateManager(model.state_specs(), kvcache_config, device),
+        replacing initialize_cache / cache_manager / paged_kv_caches.
+      required_capacity: state_manager.fits_in_pool(capacity) instead of counting blocks.
+      admit_waiting: state_manager.can_reserve(capacity), then reserve(request_id, capacity).
+      run_batch: states = state_manager.layer_states(request_ids, batch.cu_seqlens,
+        batch.token_positions) BEFORE the model; model(batch_meta, states); commit(...) where
+        advance_batch was; free(request_id) for finished requests.
+      error path: free every request in state_manager.request_ids().
+      Done: tests/test_inference.py (CPU). Claude first updates its stand-in model to the new
+        signature (see 3.5).
+
+[ ] 3.5 Tell Claude (push first). Claude then updates the tests that use the old cache API
+      (test_inference, test_attention, test_kv_cache*, test_transformer_lm, test_decode_attention,
+      the cache_context cases in test_core_contracts), and marks D18 Implemented.
+
+
+== DEFERRED: run on the GPU machine ==
+If you get to the GPU before finishing step 3, run these first: they verify step 2 on its own.
+  [ ] 1. Convert the golden checkpoint (D17). Nothing to write:
+           python scripts/convert_phase0b_checkpoint.py checkpoints/HuggingFaceFW/fineweb-edu/13000.pth
+         Convert any other checkpoint you still want to load or resume the same way
+         (the original is kept as <file>.pre_step2.bak).
+  [ ] 2. pytest tests/test_model_contracts.py
+         (its two state_specs tests need step 3.3; everything else there is step 2)
+  [ ] 3. pytest tests/test_phase0b_golden.py
+         Passing = the refactor changed no numbers. If values differ: check that both sublayers
+         read and write through the residual, the order of the additions, and which norm feeds
+         which sublayer.
+  [ ] 4. Full suite: pytest tests. Then tell Claude: Claude updates tests that fail only because
+         of renamed attributes or new signatures, and marks D15/D18 Implemented.
 
 Checks to keep in mind
   - Parameter order (embedding; per block mixer_norm, mixer, ffn_norm, ffn; head.norm, head.proj):

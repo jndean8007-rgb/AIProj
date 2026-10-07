@@ -168,6 +168,24 @@ def test_gqa_capabilities_claim_only_what_is_tested():
     assert not any([caps.chunked_prefill, caps.prefix_snapshot, caps.rollback, caps.context_parallel])
 
 
+def test_gqa_declares_its_kv_state():
+    # Step 3 (D18): a mixer declares the per-request state it needs; the engine allocates it.
+    from torch_llm.core.state import FullKVSpec
+
+    config = tiny_config()
+    specs = MIXERS.get("gqa")(config, 0).state_specs()
+    assert specs == [FullKVSpec(num_kv_heads=config.num_kv_heads, head_dim=config.head_dim)]
+
+
+def test_model_state_specs_list_every_layer():
+    from torch_llm.core.state import FullKVSpec
+    from torch_llm.model.model import TransformerLM
+
+    config = tiny_config(num_layers=3)
+    spec = FullKVSpec(num_kv_heads=config.num_kv_heads, head_dim=config.head_dim)
+    assert TransformerLM(config).state_specs() == [[spec]] * 3
+
+
 def test_mixer_caps_is_frozen():
     caps = MixerCaps(needs_positions=True)
     with pytest.raises(Exception):
