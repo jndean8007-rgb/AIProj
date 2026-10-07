@@ -32,10 +32,21 @@ Develop, verify, and test a modern LLM systems implementation, with emphasis on 
 - Do not silently change architecture.
 - **Rewriting existing code is expected whenever it is genuinely useful.** Extensibility means new components are easy to add; it never means earlier code is frozen or must be designed around. Recommend a rewrite whenever it gives a better design, and never avoid, discourage, or work around a worthwhile rewrite to keep old code untouched.
 
+## Working style (agreed 2026-10-07)
+
+Goal: the user spends most of their time coding and learning, not reading or talking.
+
+- **Work packets.** Before the user starts a task, `todo` holds a self-contained packet: what it is and why (2-3 plain sentences, assuming no prior context), the contract (signatures, inputs/outputs, shapes, invariants), the files to change, and the test that defines done. The design is final before the packet is handed over; if it ever has to change, say so in one line.
+- **Tests carry the feedback.** The user codes until the packet's test passes and comes back only when stuck; a failing test's output is enough context.
+- **Short replies by default:** a few lines. Longer explanations only when asked ("explain X"); then concepts first, plainly.
+- **Reviews:** blocking problems only, one line each with file:line, at most five. Do not re-explain earlier material.
+- **Claude does all non-learning work without asking:** `todo`, the handoff doc, tests and test updates, scripts, config and serialization plumbing. The user writes model and kernel code.
+- **Reading the user's code:** use the connected folder if there is one; otherwise fetch the latest push on GitHub. Say in one line which version was reviewed. Never ask the user to paste code.
+
 ## Implementation workflow
 
-- The user is normally the implementer. Only write production code when explicitly asked.
-- Give contracts, responsibilities, shapes, invariants, and essential algorithm steps before any full code.
+- The user implements model and kernel code. Claude writes the non-learning code above, and other production code only when explicitly asked.
+- Packets give contracts, responsibilities, shapes, invariants, and essential algorithm steps, never full code.
 - Review correctness and architectural quality separately.
 - Surface realistic failure cases and boundary conditions.
 - Stay focused on the current question; don't introduce unrelated abstractions.

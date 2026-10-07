@@ -2,90 +2,84 @@ EVERY NEW IMPLEMENTATION DETAIL MUST UPDATE TODO
 
 
 == CURRENT STEP: Phase 0b step 2 - interfaces, registries, LayerSpec, generic block (D15) ==
-Done when: tests/test_model_contracts.py passes, and tests/test_phase0b_golden.py plus the
-existing suite stay green.
+Done when: tests/test_model_contracts.py passes, tests/test_phase0b_golden.py passes, and the
+full suite is green.
 
-[ ] core/registry.py
-      Registry(kind): register(name) decorator (duplicate -> ValueError),
-      get(name) (unknown -> KeyError listing available names), names().
-      Instances: MIXERS, FFNS, RESIDUALS, TOKEN_MEMORIES, OUTPUT_HEADS.
+Done
+  [done] core/registry.py, core/interfaces.py
+  [done] LayerSpec (+ num_sublayers); ModelConfig.layers / residual / output_head / sublayer_indices
+  [done] GQA -> MIXERS "gqa", MoE -> FFNS "moe": constructor (config, layer_idx), return (update, aux)
+  [done] model/components.py
+  [done] StandardResidual -> RESIDUALS "standard"; LMHead -> OUTPUT_HEADS "lm" (PR #2)
+  [done] DecoderBlock.__init__: parts from the registries, in order mixer_norm, mixer, ffn_norm, ffn
+  [done] TransformerLM.__init__: residual and head from the registries
 
-[ ] core/interfaces.py
-      runtime_checkable Protocols:
-        SequenceMixer  forward(x [T,D], meta, state) -> (update [T,D], AuxOutputs); .capabilities
-        FeedForward    forward(x [T,D], meta) -> (update [T,D], AuxOutputs); post_step()
-        TokenMemory    forward(x [T,D], meta) -> (update [T,D], AuxOutputs)   (no impl yet)
-        Residual       init(x0) / read(state, i) / write(state, i, update) / final(state)
-        OutputHead     forward(h [T,D], meta) -> (logits [T,V], AuxOutputs)
-      MixerCaps: frozen dataclass; chunked_prefill, prefix_snapshot, rollback,
-      context_parallel, needs_positions (all default False).
+To do, in order
 
-[ ] model_config.py
-      LayerSpec(mixer="gqa", ffn="moe", memory=None).
-      ModelConfig.layers defaults to num_layers copies; wrong length -> ValueError.
-      ModelConfig.residual = "standard", ModelConfig.output_head = "lm".
+[ ] 1. Generic block + model forward
+      What: the block and the model now carry the residual *state* (today just the [T, D]
+        tensor h, i.e. the old x) and go through residual.read / residual.write instead of
+        `x = x + ...`. Same math as before; the golden test later proves it.
+      Contract:
+        DecoderBlock.forward(state, residual, meta, layer_cache) -> (state, aux)
+          mixer is sublayer i = first, ffn is i = first + 1. For each:
+            input = its norm(residual.read(state, i))
+            update, sub_aux = mixer(input, meta, layer_cache)   /   ffn(input, meta)   (positional)
+            state = residual.write(state, i, update)
+          aux = empty AuxOutputs + mixer aux under "mixer" + ffn aux under "ffn"
+        TransformerLM.forward(meta, paged_kv_caches=None) -> ModelOutputs
+          state = self.residual.init(embedding(meta.token_ids))
+          each block: state, block_aux = block(state, self.residual, meta, that layer's cache);
+                      merge block_aux under "layers.{idx}"
+          logits, head_aux = self.head(self.residual.final(state), meta); merge under "head"
+      Files: model/decoder_block.py, model/model.py
+      Done: pytest tests/test_model_contracts.py passes, except the post_step test (item 4).
+      Status (desktop copy, 2026-10-07 07:20): __init__ done. Left:
+        decoder_block.py:51,62  pass sublayer inputs positionally (MoE has no `state`/`batch_meta` params)
+        decoder_block.py:58     write(state, ...), not write(residual, ...)
+        model.py:55             state = self.residual.init(<embedding output>); `x` no longer exists
+        model.py:62             pass the object: residual=self.residual
+        model.py:69             head input is self.residual.final(state)
 
-[ ] Attention -> MIXERS "gqa"
-      constructor (config, layer_idx); forward(x, meta, state) -> (update, AuxOutputs());
-      capabilities = MixerCaps(needs_positions=True) and nothing else.
+[ ] 2. Convert the golden checkpoint (D17). Nothing to write, just run:
+        python scripts/convert_phase0b_checkpoint.py checkpoints/HuggingFaceFW/fineweb-edu/13000.pth
+      Convert any other checkpoint you still want to load or resume the same way.
+      The original is kept as <file>.pre_step2.bak.
 
-[ ] MoE -> FFNS "moe"
-      constructor (config, layer_idx); forward(x, meta) -> (update, aux).
-      Router bias update leaves forward: accumulate routing stats during training
-      forwards only; apply them in post_step(); a second post_step with nothing new,
-      or after eval forwards, changes nothing.
+[ ] 3. Golden test on the GPU: pytest tests/test_phase0b_golden.py
+      Passing = the refactor changed no numbers. If values differ: check that both sublayers
+      read and write through the residual, the order of the additions, and which norm feeds which.
 
-[ ] model/residual.py -> RESIDUALS "standard"
-      init -> x0; read -> state; write -> state + update (new tensor, never in place);
-      final -> state. Sublayer index i = 2 * layer_idx + (0 mixer, 1 ffn).
+[ ] 4. post_step: the router bias update leaves forward
+      What: each MoE router keeps one bias per expert that nudges tokens toward under-used
+        experts; it is adjusted from how many tokens each expert received. That adjustment should
+        happen once per optimizer step, but forward runs a variable number of times per step
+        (evaluation, gradient accumulation, activation recomputation). So forward only records
+        the counts, and post_step(), called once per step, applies them.
+      Contract:
+        MoE.forward: when self.training, add this batch's expert counts [E] into a non-persistent
+          buffer, and T * top_k into a running Python int (a plain int avoids a GPU sync).
+          No bias update in forward any more.
+        MoE.post_step() -> None: if anything was accumulated: f = counts / total;
+          self.router.update_expert_bias(f); reset both. Nothing accumulated -> no-op.
+          Eval forwards never accumulate.
+        TransformerLM.post_step() -> None: calls post_step() on every block's ffn.
+        train_step: calls model.post_step() once, after muon.step() and adamw.step().
+      Same training result as today with one forward per step: the bias only affects which
+        experts are selected, and selection passes no gradient.
+      Files: model/moe/moe.py, model/model.py, training/train_step.py
+      Done: test_router_bias_updates_only_in_post_step and
+            test_components_built_from_registries_satisfy_interfaces pass.
 
-[ ] LM head -> OUTPUT_HEADS "lm"
-      constructor (config, embedding); owns the final norm and the projection,
-      whose weight is the embedding weight (tied).
+[ ] 5. Full suite on the GPU, then tell Claude. Claude updates the tests that fail only because of
+      renamed attributes or new signatures, marks D15 Implemented, and replaces this checklist
+      with step 3's.
 
-[ ] model/components.py
-      imports every implementation module so the registries are populated.
-
-[ ] DecoderBlock
-      built from its LayerSpec through the registries; attributes mixer, mixer_norm,
-      ffn, ffn_norm. forward takes and returns the residual state:
-      read -> norm -> mixer -> write -> read -> norm -> ffn -> write; aux merged
-      under "mixer" and "ffn".
-
-[ ] TransformerLM
-      residual and head from registries; forward(meta, states=None);
-      post_step() calls post_step() on every FFN.
-
-[ ] Trainer
-      call model.post_step() once after the optimizer steps in train_step.
-
-[ ] model/checkpoint_migration.py
-      migrate_state_dict: blocks.{i}.attention/attn_norm/moe/moe_norm ->
-      mixer/mixer_norm/ffn/ffn_norm; final_norm -> head.norm; lm_head -> head.proj;
-      no-op on new-format keys.
-      Apply in inference/generation_setup.py AND training/checkpoint.py.
-
-[ ] Checks while refactoring
-      - Muon picks parameters by leaf name (q_proj.weight, up_weight, ...) in
-        training/optim/build.py: keep those names or update use_muon.
-      - Optimizer state in training checkpoints is stored by parameter position:
-        resuming an old training checkpoint only works if parameter order is
-        unchanged. Keep the order, or resume old checkpoints with fresh optimizer state.
-
-[ ] Tell Claude when pushed: outdated tests that build Attention/MoE directly or use
-    old attribute names get updated then.
-
-[ ] Run on the GPU machine: tests/test_core_contracts.py (step 1, still unrun),
-    tests/test_model_contracts.py, tests/test_phase0b_golden.py, full suite.
-  Checks to watch for:
-  - LM head ties by sharing the Parameter, not by storing the embedding module
-    (a stored module adds a head.embedding.weight key that old checkpoints lack).
-  - Keep parameter registration order (norm, mixer, norm, ffn; head.norm then head.proj),
-    so saved optimizer state still lines up with parameters on resume.
-  - Routing statistics: accumulate expert counts (not fractions) in training forwards only;
-    the accumulators are non-persistent buffers, reset in post_step.
-  - ModelConfig with LayerSpec must still save to JSON (checkpoint.py dumps __dict__).
-  - migrate_state_dict also needed when resuming training (training/checkpoint.py), not just generate_setup.
+Checks to keep in mind
+  - Parameter order (embedding; per block mixer_norm, mixer, ffn_norm, ffn; head.norm, head.proj):
+    saved optimizer state is matched to parameters by position, so keep it.
+  - Muon picks parameters by leaf name (q_proj.weight, up_weight, ...) in training/optim/build.py;
+    keep those names.
 
 
 == LATER / NOTES ==

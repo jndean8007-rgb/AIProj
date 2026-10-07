@@ -2,7 +2,7 @@ import torch as t
 import torch.nn as nn
 from jaxtyping import Shaped
 
-from core.batch_meta import BatchMeta
+from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.core.aux_outputs import AuxOutputs
 from torch_llm.core.registry import FFNS
 from torch_llm.model.moe.dispatch import dispatch
@@ -46,9 +46,13 @@ class MoE(nn.Module):
         )
 
 
-    def forward(self, x: Shaped[t.Tensor, 'T d_model'], meta: BatchMeta) -> tuple[t.Tensor, AuxOutputs]:
+    def forward(
+            self,
+            state: Shaped[t.Tensor, 'T d_model'],
+            meta: BatchMeta
+    ) -> tuple[t.Tensor, AuxOutputs]:
 
-        T = x.shape[0]
+        T = state.shape[0]
         expert_indices, routing_weights, router_probs = self.router(x)
         flat_exp_sorted, tokens_sorted, flat_routing_sorted, expert_counts, expert_offsets = \
         dispatch(expert_indices, routing_weights, self.num_experts)

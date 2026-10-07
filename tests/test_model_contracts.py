@@ -6,7 +6,6 @@ Where things live
   torch_llm/model/components.py imports every implementation module, so registration happens
                                  (a registry is only populated once the defining module is imported)
   torch_llm/model/model_config.py  LayerSpec + ModelConfig.layers / residual / output_head
-  torch_llm/model/checkpoint_migration.py  migrate_state_dict for pre-refactor checkpoints
 
 Interfaces (every sublayer returns an update plus AuxOutputs, so any of them can add
 losses later without an interface change):
@@ -39,8 +38,9 @@ The LM head owns the final norm (head = norm + tied projection), because each fu
 
 Checkpoints: blocks.{i}.attention / attn_norm / moe / moe_norm become
 blocks.{i}.mixer / mixer_norm / ffn / ffn_norm, and top-level final_norm / lm_head become
-head.norm / head.proj. migrate_state_dict maps old keys to new ones, is a no-op on
-new-format dicts, and generate_setup applies it when loading.
+head.norm / head.proj. Existing checkpoints are converted once with
+scripts/convert_phase0b_checkpoint.py (handoff D17); there is no migration in the loaders.
+The golden test loads the converted checkpoint strictly, which is the end-to-end check.
 """
 
 import pytest
@@ -222,51 +222,6 @@ def test_standard_residual_write_is_not_in_place():
 
     t.testing.assert_close(residual.read(state, 0), before)
     t.testing.assert_close(x0, before)
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint migration (CPU)
-# ---------------------------------------------------------------------------
-
-BLOCK_RENAMES = {".attention.": ".mixer.", ".attn_norm.": ".mixer_norm.", ".moe.": ".ffn.", ".moe_norm.": ".ffn_norm."}
-TOP_LEVEL_RENAMES = {"final_norm.": "head.norm.", "lm_head.": "head.proj."}
-
-
-def to_old_format(state_dict):
-    renamed = {}
-    for key, value in state_dict.items():
-        for old, new in BLOCK_RENAMES.items():
-            key = key.replace(new, old)
-
-        for old, new in TOP_LEVEL_RENAMES.items():
-            if key.startswith(new):
-                key = old + key[len(new):]
-
-        renamed[key] = value
-    return renamed
-
-
-def test_old_checkpoint_keys_migrate_and_load():
-    from torch_llm.model.checkpoint_migration import migrate_state_dict
-    from torch_llm.model.model import TransformerLM
-
-    source, target = TransformerLM(tiny_config()), TransformerLM(tiny_config())
-    old = to_old_format(source.state_dict())
-    assert any(".attention." in key for key in old)
-    assert "final_norm.weight" in old and "lm_head.weight" in old
-
-    target.load_state_dict(migrate_state_dict(old))
-
-    for key, value in source.state_dict().items():
-        t.testing.assert_close(target.state_dict()[key], value)
-
-
-def test_migration_is_a_no_op_on_new_format():
-    from torch_llm.model.checkpoint_migration import migrate_state_dict
-    from torch_llm.model.model import TransformerLM
-
-    state_dict = TransformerLM(tiny_config()).state_dict()
-    assert list(migrate_state_dict(dict(state_dict))) == list(state_dict)
 
 
 # ---------------------------------------------------------------------------

@@ -36,7 +36,7 @@ class ModelConfig:
     router_beta: float = 0.9
     router_bias_lr: float = 0.01
 
-    layers: list[LayerSpec] = field(default_factory=list)
+    layers: list[LayerSpec] | None = None
     residual: str = "standard"
     output_head: str = "lm"
 

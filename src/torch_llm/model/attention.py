@@ -1,10 +1,10 @@
 import torch as t
 import torch.nn as nn
 from jaxtyping import Shaped
-from einops import rearrange, reduce, repeat, pack, unpack
+from einops import rearrange
 
 from torch_llm.core.aux_outputs import AuxOutputs
-from core.interfaces import MixerCaps
+from torch_llm.core.interfaces import MixerCaps, Residual
 from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.rope import RoPE
 from torch_llm.kernals.flash_attention import FlashAttentionFunction
@@ -54,15 +54,17 @@ class Attention(nn.Module):
 
         self.rope = RoPE(head_dim, model_max_seq_len, theta)
 
-    def forward(self, x: Shaped[t.Tensor, "T d_model"],
-                batch_meta: BatchMeta,
-                paged_kv_cache = None,
-                attention_mask=None,
-                ) -> tuple[t.Tensor, AuxOutputs]:
+    def forward(
+            self,
+            state: Shaped[t.Tensor, "T d_model"],
+            batch_meta: BatchMeta,
+            paged_kv_cache = None,
+            attention_mask=None,
+        ) -> tuple[t.Tensor, AuxOutputs]:
 
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
+        q = self.q_proj(state)
+        k = self.k_proj(state)
+        v = self.v_proj(state)
         q = rearrange(q, "T (h d) -> T h d", h=self.num_q_heads, d=self.head_dim)
         k = rearrange(k, "T (h d) -> T h d", h=self.num_kv_heads, d=self.head_dim)
         v = rearrange(v, "T (h d) -> T h d", h=self.num_kv_heads, d=self.head_dim)

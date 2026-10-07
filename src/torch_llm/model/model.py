@@ -50,20 +50,23 @@ class TransformerLM(nn.Module):
     ):
         aux_outputs = AuxOutputs()
 
-        x = self.embedding(batch_meta.token_ids)
+        state = self.embedding(batch_meta.token_ids)
+
+        residual = self.residual.init(x)
 
         for layer_idx, block in enumerate(self.blocks):
             layer_cache = None if paged_kv_caches is None else paged_kv_caches[layer_idx]
 
-            x, new_aux_outputs = block(
-                x=x,
+            state, new_aux_outputs = block(
+                state=state,
+                residual=residual,
                 batch_meta=batch_meta,
                 paged_kv_cache=layer_cache,
             )
 
             aux_outputs = aux_outputs.merged(new_aux_outputs, prefix=f"layers.{layer_idx}")
 
-        logits, head_aux_outputs = self.head(x, batch_meta)
+        logits, head_aux_outputs = self.head(residual.read(state), batch_meta)
         aux_outputs = aux_outputs.merged(head_aux_outputs, prefix="head")
 
         return ModelOutputs(
