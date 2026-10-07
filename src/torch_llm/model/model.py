@@ -4,7 +4,7 @@ from jaxtyping import Shaped
 
 from torch_llm.core.aux_outputs import AuxOutputs
 from torch_llm.core.batch_meta import BatchMeta
-from torch_llm.core.registry import OUTPUT_HEADS, RESIDUALS
+from torch_llm.core.registry import OUTPUT_HEADS, RESIDUALS, FFNS
 from torch_llm.model.decoder_block import DecoderBlock
 from torch_llm.model.model_config import ModelConfig
 from torch_llm.model.outputs import ModelOutputs
@@ -17,6 +17,8 @@ class TransformerLM(nn.Module):
             config: ModelConfig,
     ):
         super().__init__()
+
+        self.config = config
 
         self.embedding = nn.Embedding(
             config.vocab_size,
@@ -52,21 +54,21 @@ class TransformerLM(nn.Module):
 
         state = self.embedding(batch_meta.token_ids)
 
-        residual = self.residual.init(x)
+        state = self.residual.init(state)
 
         for layer_idx, block in enumerate(self.blocks):
             layer_cache = None if paged_kv_caches is None else paged_kv_caches[layer_idx]
 
             state, new_aux_outputs = block(
                 state=state,
-                residual=residual,
+                residual=self.residual,
                 batch_meta=batch_meta,
                 paged_kv_cache=layer_cache,
             )
 
             aux_outputs = aux_outputs.merged(new_aux_outputs, prefix=f"layers.{layer_idx}")
 
-        logits, head_aux_outputs = self.head(residual.read(state), batch_meta)
+        logits, head_aux_outputs = self.head(self.residual.final(state), batch_meta)
         aux_outputs = aux_outputs.merged(head_aux_outputs, prefix="head")
 
         return ModelOutputs(
@@ -77,3 +79,8 @@ class TransformerLM(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
+
+    def post_step(self) -> None:
+        for layer_idx, block in enumerate(self.blocks):
+            block.fnn.post_step()
+

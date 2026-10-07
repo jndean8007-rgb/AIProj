@@ -45,17 +45,20 @@ class MoE(nn.Module):
             d_ff=d_ff,
         )
 
+        self.register_buffer('expert_counts', None, persistent=False)
+        self.running_expert_totals = 0
+
 
     def forward(
             self,
             state: Shaped[t.Tensor, 'T d_model'],
-            meta: BatchMeta
+            batch_meta: BatchMeta
     ) -> tuple[t.Tensor, AuxOutputs]:
 
         T = state.shape[0]
         expert_indices, routing_weights, router_probs = self.router(x)
         flat_exp_sorted, tokens_sorted, flat_routing_sorted, expert_counts, expert_offsets = \
-        dispatch(expert_indices, routing_weights, self.num_experts)
+            dispatch(expert_indices, routing_weights, self.num_experts)
 
 
         #compute balancing statistics
@@ -102,7 +105,14 @@ class MoE(nn.Module):
         )
 
         if self.training:
-            self.router.update_expert_bias(expert_fractions)
+            self.running_expert_totals += total_assignments
+
+            if self.expert_counts is None:
+                self.expert_counts = expert_counts.detach().clone()
+            else:
+                self.expert_counts += expert_counts
+                #expert_counts derived from binsort of expert indices.
+                #has constant length as missing experts given value 0
 
 
 
@@ -134,3 +144,9 @@ class MoE(nn.Module):
         ) #can change if want more metrics
 
         return output, aux_outputs
+
+    def post_step(self) -> None:
+        expert_fractions = self.expert_counts / self.running_expert_totals
+        self.router.update_expert_bias(expert_fractions.detach())
+        self.expert_counts = None
+        self.running_expert_totals = 0

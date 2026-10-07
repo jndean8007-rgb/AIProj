@@ -122,6 +122,8 @@ def train_step(
     if adamw_scheduler is not None:
         adamw_scheduler.step()
 
+    model.post_step()
+
     t13 = time.perf_counter()
     print(f"[scheduler_step] {t13 - t12:.4f}s")
 

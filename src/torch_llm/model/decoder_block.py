@@ -55,7 +55,7 @@ class DecoderBlock(nn.Module):
 
         aux_outputs = aux_outputs.merged(mixer_aux, prefix="mixer")
 
-        state = residual.write(residual, self.sublayer_start, update)
+        state = residual.write(state, self.sublayer_start, update)
 
 
         moe_out, ffn_aux = self.ffn(
