@@ -82,5 +82,5 @@ class TransformerLM(nn.Module):
 
     def post_step(self) -> None:
         for layer_idx, block in enumerate(self.blocks):
-            block.fnn.post_step()
+            block.ffn.post_step()
 

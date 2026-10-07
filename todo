@@ -1,12 +1,6 @@
 EVERY NEW IMPLEMENTATION DETAIL MUST UPDATE TODO
 
 
-== NOW: finish step 2 (D15) - post_step fixes ==
-Review of 3c58986 (GitHub). Blocking:
-  [ ] moe.py:59,119,132  the input was renamed to `state`, but these lines still use `x`: NameError
-  [ ] moe.py:148         post_step must do nothing when nothing was accumulated (eval-only forwards,
-                         or a second post_step); it currently divides None by 0
-  [ ] model.py:85        block.fnn -> block.ffn
 Done: test_router_bias_updates_only_in_post_step (GPU, see DEFERRED).
 
 

@@ -56,7 +56,7 @@ class MoE(nn.Module):
     ) -> tuple[t.Tensor, AuxOutputs]:
 
         T = state.shape[0]
-        expert_indices, routing_weights, router_probs = self.router(x)
+        expert_indices, routing_weights, router_probs = self.router(state)
         flat_exp_sorted, tokens_sorted, flat_routing_sorted, expert_counts, expert_offsets = \
             dispatch(expert_indices, routing_weights, self.num_experts)
 
@@ -116,7 +116,7 @@ class MoE(nn.Module):
 
 
 
-        expert_inputs = x[tokens_sorted]
+        expert_inputs = state[tokens_sorted]
 
 
         expert_outputs = MoeAutograd.apply(
@@ -129,7 +129,7 @@ class MoE(nn.Module):
 
 
         weighted_outputs = expert_outputs * flat_routing_sorted[:, None]
-        output = t.zeros_like(x)
+        output = t.zeros_like(state)
         output.index_add_(0, tokens_sorted, weighted_outputs)
 
         aux_outputs = AuxOutputs(
@@ -146,6 +146,9 @@ class MoE(nn.Module):
         return output, aux_outputs
 
     def post_step(self) -> None:
+        if self.expert_counts is None:
+            return
+
         expert_fractions = self.expert_counts / self.running_expert_totals
         self.router.update_expert_bias(expert_fractions.detach())
         self.expert_counts = None
