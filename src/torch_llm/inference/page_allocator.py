@@ -12,7 +12,7 @@ class CacheCapacityError(RuntimeError):
 
 def initialize_cache(kvcache_config, model_config, device):
     """Allocate shared page metadata and independent K/V storage for every layer."""
-    manager = KVCacheManager(
+    manager = PageAllocator(
         kvcache_config.num_blocks,
         kvcache_config.block_size,
         kvcache_config.max_cache_slots,
@@ -36,7 +36,7 @@ def initialize_cache(kvcache_config, model_config, device):
     return manager, caches
 
 
-class KVCacheManager:
+class PageAllocator:
     """Own page allocation on the CPU and mirror kernel metadata on the device.
 
     Capacity is reserved separately from committed sequence length. Mutations must

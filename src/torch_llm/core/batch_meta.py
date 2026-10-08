@@ -6,7 +6,7 @@ import torch as t
 from typing import Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from torch_llm.inference.cache_manager import CacheContainer
+    from torch_llm.inference.page_allocator import CacheContainer
 
 @dataclass(frozen=True)
 class BatchMeta: #need to annotate actual shapes

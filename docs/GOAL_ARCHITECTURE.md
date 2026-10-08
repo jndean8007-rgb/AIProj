@@ -76,7 +76,7 @@ flowchart TB
 ## 1. Baseline: what exists today (as of `57c2c22`)
 
 - Packed varlen decoder LM with GQA, RoPE, RMSNorm, and a top-k MoE (softmax router, aux-free bias plus aux loss). Custom Triton flash-attention, grouped SwiGLU MoE kernels, and Muon kernels. (D1–D4)
-- Inference: paged KV cache, a single `KVCacheManager`, continuous batching with FIFO full-lifetime reservation, and a split-K paged decode kernel. (D5–D7)
+- Inference: paged KV cache, a single `PageAllocator`, continuous batching with FIFO full-lifetime reservation, and a split-K paged decode kernel. (D5–D7)
 - In progress: FP8 KV quantization (D8). The tree is currently broken there.
 
 ---
@@ -347,7 +347,7 @@ Also on every global layer:
 
 ### 7.1 Unified state manager
 
-This generalizes `KVCacheManager` into one owner for every per-request state kind:
+This generalizes `PageAllocator` into one owner for every per-request state kind:
 
 | `StateSpec` | Shape | Paging |
 |---|---|---|

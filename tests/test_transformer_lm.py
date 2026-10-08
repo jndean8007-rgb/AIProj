@@ -3,7 +3,7 @@ import torch as t
 
 from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.inference.batching import build_prefill_batch
-from torch_llm.inference.cache_manager import initialize_cache
+from torch_llm.inference.page_allocator import initialize_cache
 from torch_llm.inference.kvcache_config import KVCacheConfig
 from torch_llm.inference.request_state import RequestState
 from torch_llm.inference.runtime import InferenceRuntime

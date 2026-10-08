@@ -28,7 +28,7 @@ for path in (REPOSITORY_ROOT / "src", REPOSITORY_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from torch_llm.inference.cache_manager import KVCacheManager
+from torch_llm.inference.page_allocator import PageAllocator
 from torch_llm.inference.paged_kv_cache import PagedKVCache
 from torch_llm.kernals.decode_attention import decode_attention_wrapper
 
@@ -82,7 +82,7 @@ def build_decode_batch(batch_size, context_length, args):
     block_size = args.block_size
     blocks_per_request = -(-context_length // block_size)
     num_blocks = batch_size * blocks_per_request + 1
-    manager = KVCacheManager(num_blocks, block_size, batch_size + 1, context_length + block_size, "cuda")
+    manager = PageAllocator(num_blocks, block_size, batch_size + 1, context_length + block_size, "cuda")
     caches = {
         dtype: PagedKVCache(num_blocks, block_size, args.num_kv_heads, args.head_dim, "cuda", dtype)
         for dtype in (t.bfloat16, FP8)

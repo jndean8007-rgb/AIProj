@@ -5,7 +5,7 @@ import pytest
 import torch as t
 
 from torch_llm.inference.batching import build_decode_batch, build_prefill_batch, merge_decode_batches
-from torch_llm.inference.cache_manager import CacheCapacityError, KVCacheManager
+from torch_llm.inference.page_allocator import CacheCapacityError, PageAllocator
 from torch_llm.inference.continuous_batch_scheduler import ContinuousBatchScheduler
 from torch_llm.inference.input_processor import InferenceInputProcessor
 from torch_llm.inference.kv_cache import KVCache
@@ -92,7 +92,7 @@ def assert_released(runtime):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_cache_reuse_clear_and_failed_reservation_are_safe(device):
-    manager = KVCacheManager(4, 2, 3, 8, device)
+    manager = PageAllocator(4, 2, 3, 8, device)
     a = manager.allocate_request(100, 3)
     b = manager.allocate_request(200, 1)
     before = manager.block_table.clone()
@@ -113,7 +113,7 @@ def test_cache_reuse_clear_and_failed_reservation_are_safe(device):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_context_uses_full_slot_table_and_committed_history(device):
-    manager = KVCacheManager(8, 2, 4, 8, device)
+    manager = PageAllocator(8, 2, 4, 8, device)
     slot = manager.allocate_request(9, 6)
     manager.advance(9, 3)
     slots = t.tensor([slot], device=device)
@@ -319,7 +319,7 @@ def test_many_requests_remain_independent_under_page_and_slot_reuse():
 
 
 def test_cache_rejects_overflow_even_inside_last_partial_page():
-    manager = KVCacheManager(2, 4, 1, 5, "cpu")
+    manager = PageAllocator(2, 4, 1, 5, "cpu")
     manager.allocate_request(1, 5)
     manager.advance(1, 5)
     with pytest.raises(CacheCapacityError):

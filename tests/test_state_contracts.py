@@ -4,7 +4,7 @@ Everything here runs on CPU (float32 storage, no Triton), so it works on any mac
 
 Where things live
   torch_llm/core/state.py              FullKVSpec, PagedKVRead, FullKVView (Protocol)
-  torch_llm/inference/page_allocator.py PageAllocator (was KVCacheManager), CacheCapacityError
+  torch_llm/inference/page_allocator.py PageAllocator (was PageAllocator), CacheCapacityError
   torch_llm/inference/state_manager.py StateManager, StateSnapshot, PagedKVView
 
 Ownership: a mixer declares what state it needs (state_specs()); the engine's StateManager

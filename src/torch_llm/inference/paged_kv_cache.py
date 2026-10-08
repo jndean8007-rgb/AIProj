@@ -4,7 +4,7 @@ from torch_llm.kernals.kv_cache.quantized_append import quantize_append_wrapper
 
 
 class PagedKVCache:
-    """Per-layer paged storage; allocation and lengths belong to KVCacheManager."""
+    """Per-layer paged storage; allocation and lengths belong to PageAllocator."""
 
 
     def __init__(

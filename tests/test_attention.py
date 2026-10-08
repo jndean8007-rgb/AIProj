@@ -3,7 +3,7 @@ import math
 import pytest
 import torch as t
 
-from torch_llm.inference.cache_manager import KVCacheManager
+from torch_llm.inference.page_allocator import PageAllocator
 from torch_llm.inference.paged_kv_cache import PagedKVCache
 from torch_llm.core.batch_meta import BatchMeta
 from torch_llm.model.attention import Attention
@@ -37,7 +37,7 @@ def test_attention_train_mode(attention):
 
 @t.inference_mode()
 def test_attention_prefill_updates_cache(attention):
-    manager = KVCacheManager(8, 4, 4, 16, "cuda")
+    manager = PageAllocator(8, 4, 4, 16, "cuda")
     cache = PagedKVCache(8, 4, 2, 16, "cuda", t.float32)
     slots = t.tensor([manager.allocate_request(10, 3), manager.allocate_request(20, 5)], device="cuda")
     cu = t.tensor([0, 3, 8], dtype=t.int32, device="cuda")
@@ -57,7 +57,7 @@ def test_attention_prefill_updates_cache(attention):
 
 @t.inference_mode()
 def test_attention_decode_updates_cache_and_matches_reference(attention):
-    manager = KVCacheManager(8, 4, 4, 16, "cuda")
+    manager = PageAllocator(8, 4, 4, 16, "cuda")
     cache = PagedKVCache(8, 4, 2, 16, "cuda", t.float32)
     lengths = [3, 5]
     slots = []

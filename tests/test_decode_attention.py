@@ -3,7 +3,7 @@ import math
 import pytest
 import torch as t
 
-from torch_llm.inference.cache_manager import KVCacheManager
+from torch_llm.inference.page_allocator import PageAllocator
 from torch_llm.inference.paged_kv_cache import PagedKVCache
 from torch_llm.kernals.decode_attention import decode_attention_wrapper
 
@@ -15,7 +15,7 @@ def test_decode_attention(dtype):
     t.manual_seed(4)
     lengths = [3, 73, 141]
     hq, hkv, d = 8, 2, 16
-    manager = KVCacheManager(32, 16, 5, 160, "cuda")
+    manager = PageAllocator(32, 16, 5, 160, "cuda")
     cache = PagedKVCache(32, 16, hkv, d, "cuda", dtype)
     slots, keys, values = [], [], []
     for request_id, length in enumerate(lengths):

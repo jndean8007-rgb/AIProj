@@ -12,7 +12,7 @@ from torch_llm.inference.batching import (
     build_prefill_batch,
     merge_decode_batches,
 )
-from torch_llm.inference.cache_manager import initialize_cache
+from torch_llm.inference.page_allocator import initialize_cache
 from torch_llm.inference.continuous_batch_scheduler import ContinuousBatchScheduler
 from torch_llm.inference.kvcache_config import KVCacheConfig
 from torch_llm.inference.output_handler import OutputSink

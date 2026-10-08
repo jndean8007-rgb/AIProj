@@ -205,7 +205,7 @@ def test_fp8_cache_allocates_fp32_scales_per_token_and_head():
 
 @pytest.mark.parametrize("dtype,quantized", [(t.bfloat16, False), (FP8, True)])
 def test_initialize_cache_follows_config_dtype(dtype, quantized):
-    from torch_llm.inference.cache_manager import initialize_cache
+    from torch_llm.inference.page_allocator import initialize_cache
 
     config = KVCacheConfig(num_blocks=8, block_size=4, max_cache_slots=2, cache_max_seq_len=16, kv_cache_dtype=dtype)
     model_config = SimpleNamespace(num_layers=3, num_kv_heads=2, head_dim=16)
@@ -368,11 +368,11 @@ def test_fp8_append_zero_vectors():
 @t.inference_mode()
 def test_fp8_append_through_cache_manager_round_trips():
     # Same entry point the runtime uses: manager resolves locations, cache stores.
-    from torch_llm.inference.cache_manager import KVCacheManager
+    from torch_llm.inference.page_allocator import PageAllocator
     from torch_llm.inference.paged_kv_cache import PagedKVCache
 
     t.manual_seed(5)
-    manager = KVCacheManager(16, 4, 2, 32, "cuda")
+    manager = PageAllocator(16, 4, 2, 32, "cuda")
     cache = PagedKVCache(16, 4, 2, 32, "cuda", FP8)
     length = 13
     slot = manager.allocate_request(0, length)
@@ -402,11 +402,11 @@ def fill_decode_batch(caches, lengths, num_kv_heads, head_dim, block_size, kv_dt
     being decoded, already written, so context_length == length.
     Returns (manager, context, keys, values) with keys/values as written: lists of [L, H_kv, D].
     """
-    from torch_llm.inference.cache_manager import KVCacheManager
+    from torch_llm.inference.page_allocator import PageAllocator
 
     generator = t.Generator(device="cuda").manual_seed(seed)
     num_blocks = sum(-(-length // block_size) for length in lengths) + 4
-    manager = KVCacheManager(num_blocks, block_size, len(lengths) + 1, max(lengths) + block_size, "cuda")
+    manager = PageAllocator(num_blocks, block_size, len(lengths) + 1, max(lengths) + block_size, "cuda")
     slots, keys, values = [], [], []
     for request_id, length in enumerate(lengths):
         slots.append(manager.allocate_request(request_id, length))
@@ -554,14 +554,14 @@ def test_decode_ignores_stale_cache_contents(cache_dtype):
 def test_attention_decode_with_fp8_cache_matches_reference():
     # Attention in decode mode must quantize the new token into the cache first,
     # then attend over the full (dequantized) history including that token.
-    from torch_llm.inference.cache_manager import KVCacheManager
+    from torch_llm.inference.page_allocator import PageAllocator
     from torch_llm.inference.paged_kv_cache import PagedKVCache
     from torch_llm.core.batch_meta import BatchMeta
     from torch_llm.model.attention import Attention
 
     t.manual_seed(9)
     attention = Attention(128, 8, 2, 16, 256).cuda().eval()
-    manager = KVCacheManager(16, 4, 4, 64, "cuda")
+    manager = PageAllocator(16, 4, 4, 64, "cuda")
     cache = PagedKVCache(16, 4, 2, 16, "cuda", FP8)
     lengths = [3, 9]
     slots = []
